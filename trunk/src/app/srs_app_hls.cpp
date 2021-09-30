@@ -573,9 +573,9 @@ srs_error_t SrsHlsMuxer::flush_video(SrsTsMessageCache* cache)
     return err;
 }
 
-srs_error_t SrsHlsMuxer::segment_close()
+srs_error_t SrsHlsMuxer::segment_close(bool isEnd)
 {
-    srs_error_t err = do_segment_close();
+    srs_error_t err = do_segment_close(isEnd);
 
     // We always cleanup current segment.
     srs_freep(current);
@@ -583,7 +583,7 @@ srs_error_t SrsHlsMuxer::segment_close()
     return err;
 }
 
-srs_error_t SrsHlsMuxer::do_segment_close()
+srs_error_t SrsHlsMuxer::do_segment_close(bool isEnd)
 {
     srs_error_t err = srs_success;
     
@@ -645,7 +645,7 @@ srs_error_t SrsHlsMuxer::do_segment_close()
     segments->shrink(hls_window);
     
     // refresh the m3u8, donot contains the removed ts
-    err = refresh_m3u8();
+    err = refresh_m3u8(isEnd);
     
     // remove the ts file.
     segments->clear_expired(hls_cleanup);
@@ -694,7 +694,7 @@ srs_error_t SrsHlsMuxer::write_hls_key()
     return err;
 }
 
-srs_error_t SrsHlsMuxer::refresh_m3u8()
+srs_error_t SrsHlsMuxer::refresh_m3u8(bool isEnd)
 {
     srs_error_t err = srs_success;
     
@@ -704,7 +704,7 @@ srs_error_t SrsHlsMuxer::refresh_m3u8()
     }
     
     std::string temp_m3u8 = m3u8 + ".temp";
-    if ((err = _refresh_m3u8(temp_m3u8)) == srs_success) {
+    if ((err = _refresh_m3u8(temp_m3u8, isEnd)) == srs_success) {
         if (rename(temp_m3u8.c_str(), m3u8.c_str()) < 0) {
             err = srs_error_new(ERROR_HLS_WRITE_FAILED, "hls: rename m3u8 file failed. %s => %s", temp_m3u8.c_str(), m3u8.c_str());
         }
@@ -720,7 +720,7 @@ srs_error_t SrsHlsMuxer::refresh_m3u8()
     return err;
 }
 
-srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
+srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file, bool isEnd)
 {
     srs_error_t err = srs_success;
     
@@ -803,6 +803,10 @@ srs_error_t SrsHlsMuxer::_refresh_m3u8(string m3u8_file)
         }
         //ss << segment->uri << SRS_CONSTS_LF;
         ss << seg_uri << SRS_CONSTS_LF;
+    }
+
+    if(isEnd){
+        ss << "#EXT-X-ENDLIST" << SRS_CONSTS_LF;
     }
     
     // write m3u8 to writer.
@@ -927,7 +931,7 @@ srs_error_t SrsHlsController::on_unpublish()
         return srs_error_wrap(err, "hls: flush audio");
     }
     
-    if ((err = muxer->segment_close()) != srs_success) {
+    if ((err = muxer->segment_close(true)) != srs_success) {
         return srs_error_wrap(err, "hls: segment close");
     }
 

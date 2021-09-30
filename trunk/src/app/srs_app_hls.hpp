@@ -195,12 +195,12 @@ public:
     virtual srs_error_t flush_audio(SrsTsMessageCache* cache);
     virtual srs_error_t flush_video(SrsTsMessageCache* cache);
     // Close segment(ts).
-    virtual srs_error_t segment_close();
+    virtual srs_error_t segment_close(bool isEnd = false);
 private:
-    virtual srs_error_t do_segment_close();
+    virtual srs_error_t do_segment_close(bool isEnd = false);
     virtual srs_error_t write_hls_key();
-    virtual srs_error_t refresh_m3u8();
-    virtual srs_error_t _refresh_m3u8(std::string m3u8_file);
+    virtual srs_error_t refresh_m3u8(bool isEnd);
+    virtual srs_error_t _refresh_m3u8(std::string m3u8_file,bool isEnd);
 };
 
 // The hls stream cache,
