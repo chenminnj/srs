@@ -477,16 +477,12 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
 
         // 2. 创建 rtc source 
         SrsRtcSource *rtc = NULL;
-        bool rtc_server_enabled = _srs_config->get_rtc_server_enabled();
-        bool rtc_enabled = _srs_config->get_rtc_enabled(req->vhost);
-        // if (rtc_server_enabled && rtc_enabled ) {
-            if ((err = _srs_rtc_sources->fetch_or_create(req, &rtc)) != srs_success) {
-                return srs_error_wrap(err, "create source");
-            }
+        if ((err = _srs_rtc_sources->fetch_or_create(req, &rtc)) != srs_success) {
+            return srs_error_wrap(err, "create source");
+        }
 
-            if (!rtc->can_publish()) {
-                return srs_error_new(ERROR_RTC_SOURCE_BUSY, "rtc stream %s busy", req->get_stream_url().c_str());
-            }
+        // if (!rtc->can_publish()) {
+        //     return srs_error_new(ERROR_RTC_SOURCE_BUSY, "rtc stream %s busy", req->get_stream_url().c_str());
         // }
 
         // 3. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
@@ -506,9 +502,9 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
         if ((err = rtmp->create_consumer(liveConsumer)) != srs_success) {
             return srs_error_wrap(err, "rtmp: create consumer");
         }
-        // if ((err = rtmp->consumer_dumps(liveConsumer)) != srs_success) {
-        //     return srs_error_wrap(err, "rtmp: dumps consumer");
-        // }
+        if ((err = rtmp->consumer_dumps(liveConsumer)) != srs_success) {
+            return srs_error_wrap(err, "rtmp: dumps consumer");
+        }
     }
 
     return err;
