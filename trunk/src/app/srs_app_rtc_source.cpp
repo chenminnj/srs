@@ -469,29 +469,22 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
 
     // TODO: FIXME: Implements edge cluster.
     if (_srs_config->get_vhost_is_edge(req->vhost)) {
-        // 1. 创建 rtmp source
-        SrsLiveSource *rtmp = NULL;
-        if ((err = _srs_sources->fetch_or_create(req, _srs_hybrid->srs()->instance(), &rtmp)) != srs_success) {
-            return srs_error_wrap(err, "create source");
-        } 
+        if ( can_publish() ) {
+            // 1. 创建 rtmp source
+            SrsLiveSource *rtmp = NULL;
+            if ((err = _srs_sources->fetch_or_create(req, _srs_hybrid->srs()->instance(), &rtmp)) != srs_success) {
+                return srs_error_wrap(err, "create source");
+            } 
+            rtmp->set_cache(_srs_config->get_gop_cache(req->vhost));
 
-        // 2. 创建 rtc source 
-        SrsRtcSource *rtc = NULL;
-        if ((err = _srs_rtc_sources->fetch_or_create(req, &rtc)) != srs_success) {
-            return srs_error_wrap(err, "create source");
-        }
-
-        if (rtc->can_publish()) {
-            // 3. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
-            if (rtc) {
-                SrsRtcFromRtmpBridger *bridger = new SrsRtcFromRtmpBridger(rtc);
-                if ((err = bridger->initialize(req)) != srs_success) {
-                    srs_freep(bridger);
-                    return srs_error_wrap(err, "bridger init");
-                }
-
-                rtmp->set_bridger(bridger);
+            // 2. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
+            SrsRtcFromRtmpBridger *bridger = new SrsRtcFromRtmpBridger(this);
+            if ((err = bridger->initialize(req)) != srs_success) {
+                srs_freep(bridger);
+                return srs_error_wrap(err, "bridger init");
             }
+            rtmp->set_bridger(bridger);
+            
             SrsLiveConsumer* liveConsumer = NULL;
             // SrsAutoFree(SrsLiveConsumer, liveConsumer);
             if ((err = rtmp->create_consumer(liveConsumer)) != srs_success) {
