@@ -481,30 +481,26 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
             return srs_error_wrap(err, "create source");
         }
 
-        // if (!rtc->can_publish()) {
-        //     return srs_error_new(ERROR_RTC_SOURCE_BUSY, "rtc stream %s busy", req->get_stream_url().c_str());
-        // }
+        if (rtc->can_publish()) {
+            // 3. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
+            if (rtc) {
+                SrsRtcFromRtmpBridger *bridger = new SrsRtcFromRtmpBridger(rtc);
+                if ((err = bridger->initialize(req)) != srs_success) {
+                    srs_freep(bridger);
+                    return srs_error_wrap(err, "bridger init");
+                }
 
-        // 3. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
-        if (rtc) {
-            SrsRtcFromRtmpBridger *bridger = new SrsRtcFromRtmpBridger(rtc);
-            if ((err = bridger->initialize(req)) != srs_success) {
-                srs_freep(bridger);
-                return srs_error_wrap(err, "bridger init");
+                rtmp->set_bridger(bridger);
             }
-
-            rtmp->set_bridger(bridger);
-        }
-
-
-        SrsLiveConsumer* liveConsumer = NULL;
-        // SrsAutoFree(SrsLiveConsumer, liveConsumer);
-        if ((err = rtmp->create_consumer(liveConsumer)) != srs_success) {
-            return srs_error_wrap(err, "rtmp: create consumer");
-        }
-        if ((err = rtmp->consumer_dumps(liveConsumer)) != srs_success) {
-            return srs_error_wrap(err, "rtmp: dumps consumer");
-        }
+            SrsLiveConsumer* liveConsumer = NULL;
+            // SrsAutoFree(SrsLiveConsumer, liveConsumer);
+            if ((err = rtmp->create_consumer(liveConsumer)) != srs_success) {
+                return srs_error_wrap(err, "rtmp: create consumer");
+            }
+            if ((err = rtmp->consumer_dumps(liveConsumer)) != srs_success) {
+                return srs_error_wrap(err, "rtmp: dumps consumer");
+            }
+        }        
     }
 
     return err;
