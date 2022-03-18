@@ -109,12 +109,13 @@ srs_error_t SrsGoApiRtcPlay::do_serve_http(ISrsHttpResponseWriter* w, ISrsHttpMe
     // Parse app and stream from streamurl.
     string app;
     string stream_name;
+    string host;  // for srs 级联加上连接url的query串
     if (true) {
         string tcUrl;
         srs_parse_rtmp_url(streamurl, tcUrl, stream_name);
 
         int port;
-        string schema, host, vhost, param;
+        string schema, vhost, param;
         srs_discovery_tc_url(tcUrl, schema, host, vhost, app, stream_name, port, param);
     }
 
@@ -154,6 +155,7 @@ srs_error_t SrsGoApiRtcPlay::do_serve_http(ISrsHttpResponseWriter* w, ISrsHttpMe
 
     ruc.req_->app = app;
     ruc.req_->stream = stream_name;
+    ruc.req_->host = host;
 
     // TODO: FIXME: Parse vhost.
     // discovery vhost, resolve the vhost from config
