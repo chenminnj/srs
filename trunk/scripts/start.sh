@@ -7,6 +7,7 @@ $SRS_LOG_FILE {
     dateext
     dateformat -%Y-%m-%d.log
     compress
+    delaycompress
     missingok
     notifempty
     rotate 30
@@ -18,5 +19,9 @@ $SRS_LOG_FILE {
     endscript
 }
 EOF
+
+# start cron for logrotate
+service cron start
+
 # start srs
 /usr/local/srs/objs/srs -c conf/bruce.conf
