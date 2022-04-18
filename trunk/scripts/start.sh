@@ -9,8 +9,7 @@ $SRS_LOG_FILE {
     compress
     delaycompress
     missingok
-    notifempty
-    rotate 30
+    rotate 15
     sharedscripts
     postrotate
         if [ -f /usr/local/srs/objs/srs.pid ]; then
