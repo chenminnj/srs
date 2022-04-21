@@ -160,6 +160,11 @@ public:
 // A Source is a stream, to publish and to play with, binding to SrsRtcPublishStream and SrsRtcPlayStream.
 class SrsRtcSource : public ISrsFastTimer
 {
+    // for webrtc client use rtmp upstream
+private:
+    SrsLiveConsumer *liveConsumer4RtmpUpstream_;    
+    SrsRtcFromRtmpBridger *bridger4RtmpUpstream_;
+    // over
 private:
     // For publish, it's the publish client id.
     // For edge, it's the edge ingest id.

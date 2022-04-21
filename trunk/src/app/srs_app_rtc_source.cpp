@@ -332,6 +332,9 @@ SrsRtcSource::SrsRtcSource()
     bridger_ = NULL;
 
     pli_for_rtmp_ = pli_elapsed_ = 0;
+
+    bridger4RtmpUpstream_ = NULL;
+    liveConsumer4RtmpUpstream_ = NULL;
 }
 
 SrsRtcSource::~SrsRtcSource()
@@ -471,27 +474,26 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
     if (_srs_config->get_vhost_is_edge(req->vhost)) {
         if ( can_publish() ) {
             // 1. 创建 rtmp source
-            SrsLiveSource *rtmp = NULL;
-            if ((err = _srs_sources->fetch_or_create(req, _srs_hybrid->srs()->instance(), &rtmp)) != srs_success) {
+            SrsLiveSource *rtmpSourceUpstream = NULL ;
+            if ((err = _srs_sources->fetch_or_create(req, _srs_hybrid->srs()->instance(), &rtmpSourceUpstream)) != srs_success) {
                 return srs_error_wrap(err, "create source");
             } 
-            rtmp->set_cache(_srs_config->get_gop_cache(req->vhost));
+            rtmpSourceUpstream->set_cache(true);
 
             // 2. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
-            SrsRtcFromRtmpBridger *bridger = new SrsRtcFromRtmpBridger(this);
-            if ((err = bridger->initialize(req)) != srs_success) {
-                srs_freep(bridger);
-                return srs_error_wrap(err, "bridger init");
-            }
-            rtmp->set_bridger(bridger);
+            // 当这路流的没有消费者时，这个bridge会被销毁，需要重新创建
+            if (bridger4RtmpUpstream_ == NULL ){
+                bridger4RtmpUpstream_ = new SrsRtcFromRtmpBridger(this);
+                if ((err = bridger4RtmpUpstream_->initialize(req)) != srs_success) {
+                    srs_freep(bridger4RtmpUpstream_);
+                    return srs_error_wrap(err, "bridger init");
+                }
+                rtmpSourceUpstream->set_bridger(bridger4RtmpUpstream_);
             
-            SrsLiveConsumer* liveConsumer = NULL;
-            // SrsAutoFree(SrsLiveConsumer, liveConsumer);
-            if ((err = rtmp->create_consumer(liveConsumer)) != srs_success) {
-                return srs_error_wrap(err, "rtmp: create consumer");
-            }
-            if ((err = rtmp->consumer_dumps(liveConsumer)) != srs_success) {
-                return srs_error_wrap(err, "rtmp: dumps consumer");
+                if ((err = rtmpSourceUpstream->create_consumer(liveConsumer4RtmpUpstream_)) != srs_success) {
+                    srs_freep(liveConsumer4RtmpUpstream_);
+                    return srs_error_wrap(err, "rtmp: create consumer");
+                }
             }
         }        
     }
@@ -515,6 +517,13 @@ void SrsRtcSource::on_consumer_destroy(SrsRtcConsumer* consumer)
     it = std::find(consumers.begin(), consumers.end(), consumer);
     if (it != consumers.end()) {
         consumers.erase(it);
+    }
+
+    // // for rtmp upstream
+    if( consumers.empty() ){
+        srs_freep(liveConsumer4RtmpUpstream_); 
+        // rtmp live consumer销毁时，会调用source的on_consumer_destroy， 当所source有的consumer都销毁时，会调用 play_edge->on_all_client_stop() 再调 ingester->stop() 触发 SrsLiveSource::on_unpublish 把bridger4RtmpUpstream_ 析构了
+        bridger4RtmpUpstream_ = NULL;
     }
 
     // When all consumers finished, notify publisher to handle it.
