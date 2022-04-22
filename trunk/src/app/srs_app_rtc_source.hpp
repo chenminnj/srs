@@ -164,6 +164,7 @@ class SrsRtcSource : public ISrsFastTimer
 private:
     SrsLiveConsumer *liveConsumer4RtmpUpstream_;    
     SrsRtcFromRtmpBridger *bridger4RtmpUpstream_;
+    srs_mutex_t lock;
     // over
 private:
     // For publish, it's the publish client id.

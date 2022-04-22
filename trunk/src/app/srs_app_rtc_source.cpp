@@ -335,6 +335,7 @@ SrsRtcSource::SrsRtcSource()
 
     bridger4RtmpUpstream_ = NULL;
     liveConsumer4RtmpUpstream_ = NULL;
+    lock = srs_mutex_new();
 }
 
 SrsRtcSource::~SrsRtcSource()
@@ -346,6 +347,8 @@ SrsRtcSource::~SrsRtcSource()
     srs_freep(req);
     srs_freep(bridger_);
     srs_freep(stream_desc_);
+
+    srs_mutex_destroy(lock);
 }
 
 srs_error_t SrsRtcSource::initialize(SrsRequest* r)
@@ -467,6 +470,7 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
 {
     srs_error_t err = srs_success;
 
+    SrsLocker(lock);
     consumer = new SrsRtcConsumer(this);
     consumers.push_back(consumer);
 
@@ -513,6 +517,8 @@ srs_error_t SrsRtcSource::consumer_dumps(SrsRtcConsumer* consumer, bool ds, bool
 
 void SrsRtcSource::on_consumer_destroy(SrsRtcConsumer* consumer)
 {
+    SrsLocker(lock);
+    
     std::vector<SrsRtcConsumer*>::iterator it;
     it = std::find(consumers.begin(), consumers.end(), consumer);
     if (it != consumers.end()) {
@@ -522,7 +528,7 @@ void SrsRtcSource::on_consumer_destroy(SrsRtcConsumer* consumer)
     // // for rtmp upstream
     if( consumers.empty() ){
         srs_freep(liveConsumer4RtmpUpstream_); 
-        // rtmp live consumer销毁时，会调用source的on_consumer_destroy， 当所source有的consumer都销毁时，会调用 play_edge->on_all_client_stop() 再调 ingester->stop() 触发 SrsLiveSource::on_unpublish 把bridger4RtmpUpstream_ 析构了
+        // rtmp live consumer销毁时，会调用source的on_consumer_destroy， 当所source有的consumer都销毁时，会调用 play_edge->on_all_client_stop() 再调 ingester->stop() 触发 SrsLiveSource::on_unpublish 已经把bridger4RtmpUpstream_ 析构了
         bridger4RtmpUpstream_ = NULL;
     }
 
