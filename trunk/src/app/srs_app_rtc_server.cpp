@@ -243,6 +243,7 @@ SrsRtcServer::SrsRtcServer()
 {
     handler = NULL;
     hijacker = NULL;
+    m_redis = NULL;
 
     _srs_config->subscribe(this);
 }
@@ -250,6 +251,12 @@ SrsRtcServer::SrsRtcServer()
 SrsRtcServer::~SrsRtcServer()
 {
     _srs_config->unsubscribe(this);
+
+    // by chennin 4 Signaling separation
+    if(m_redis){
+        delete m_redis;
+    }
+
 
     if (true) {
         vector<SrsUdpMuxListener*>::iterator it;
@@ -272,6 +279,9 @@ srs_error_t SrsRtcServer::initialize()
     if ((err = _srs_blackhole->initialize()) != srs_success) {
         return srs_error_wrap(err, "black hole");
     }
+
+    // by chennin 4 Signaling separation
+    m_redis = new Redis("tcp://127.0.0.1:6379");
 
     return err;
 }
@@ -560,13 +570,118 @@ srs_error_t SrsRtcServer::do_create_session(SrsRtcUserConfig* ruc, SrsSdp& local
 
     // We allows username is optional, but it never empty here.
     _srs_rtc_manager->add_with_name(username, session);
+    // by chennin 4 Signaling separation
+    this->do_persist_session(session, req);
+    // over
 
     return err;
 }
 
+// by chennin 4 Signaling separation
+void SrsRtcServer::do_persist_session(SrsRtcConnection* session,SrsRequest* req){
+    if(session){
+        // sdp
+        std::ostringstream os;
+        session->get_local_sdp()->encode(os);
+        m_redis->hset(session->username().c_str(), "localSDP", os.str());
+
+        os.str("");
+        session->get_remote_sdp()->encode(os);
+        m_redis->hset(session->username().c_str(), "remoteSDP", os.str());
+
+        // req
+        std::string reqStr = req->vhost +":"+ req->app+ ":" + req->stream;
+        m_redis->hset(session->username().c_str(), "req", reqStr.c_str());
+
+        // cid_
+        m_redis->hset(session->username().c_str(), "cid_", session->get_id().c_str() );
+
+        srs_error("chenmin: session write to redis");
+    }
+    return;
+}
+
+SrsRtcConnection* SrsRtcServer::get_persist_session(std::string& username){
+    // cid_
+    std::string cidStr = * m_redis->hget(username.c_str(), "cid_" );
+    SrsContextId cid_ = SrsContextId();
+    cid_.set_value(cidStr.c_str());
+    SrsRtcConnection* session = new SrsRtcConnection(this,cid_);
+
+    // req
+    std::string reqStr = * m_redis->hget(username.c_str(),"req");
+    char *reqChars;
+    reqChars = new char(reqStr.length()+1);
+    strcpy(reqChars,reqStr.c_str());
+
+    SrsRequest req;
+    char *ptr; 
+    ptr = strtok(reqChars, ":");
+    req.vhost = ptr;
+    ptr = strtok(NULL, ":");
+    req.app = ptr;
+    ptr = strtok(NULL, ":");
+    req.stream = ptr;
+
+    delete reqChars;
+
+    SrsSdp local_sdp,remote_sdp;
+    // remote sdp
+    std::string remote_sdp_str = * m_redis->hget(username.c_str(),"remoteSDP");
+    remote_sdp.parse(remote_sdp_str);
+    session->set_remote_sdp(remote_sdp);
+ 
+    // local sdp
+    std::string local_sdp_str = * m_redis->hget(username.c_str(),"localSDP");
+    local_sdp.parse(local_sdp_str);
+    local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(req.vhost);
+    local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(req.vhost);
+
+    // Setup the negotiate DTLS role.
+    local_sdp.session_negotiate_ = local_sdp.session_config_;
+    if (remote_sdp.get_dtls_role() == "active") {
+        local_sdp.session_negotiate_.dtls_role = "passive";
+    } else if (remote_sdp.get_dtls_role() == "passive") {
+        local_sdp.session_negotiate_.dtls_role = "active";
+    } else if (remote_sdp.get_dtls_role() == "actpass") {
+        local_sdp.session_negotiate_.dtls_role = local_sdp.session_config_.dtls_role;
+    } else {
+        // @see: https://tools.ietf.org/html/rfc4145#section-4.1
+        // The default value of the setup attribute in an offer/answer exchange
+        // is 'active' in the offer and 'passive' in the answer.
+        local_sdp.session_negotiate_.dtls_role = "passive";
+    }
+    // local_sdp.set_fingerprint(_srs_rtc_dtls_certificate->get_fingerprint());
+    local_sdp.set_dtls_role(local_sdp.session_negotiate_.dtls_role);
+    
+    session->set_local_sdp(local_sdp);
+
+    session->set_state(WAITING_STUN);
+
+    // session initialize
+    srs_error_t err;
+    if ((err = session->initialize(&req, true, true, username)) != srs_success) {
+        srs_error("chenmin get_persist_session: init session failed. ret=%d", err);
+        return NULL;
+    }
+
+    _srs_rtc_manager->add_with_name(username, session);
+
+    srs_error("chenmin: session get from redis");
+
+    return session;
+}
+// over
+
 SrsRtcConnection* SrsRtcServer::find_session_by_username(const std::string& username)
 {
     ISrsResource* conn = _srs_rtc_manager->find_by_name(username);
+    // by chennin 4 Signaling separation
+    if(conn == NULL){
+        std::string tusername = username;
+        conn = get_persist_session(tusername);
+    }
+    // over
     return dynamic_cast<SrsRtcConnection*>(conn);
 }
 
@@ -678,7 +793,9 @@ srs_error_t RtcServerAdapter::initialize()
 {
     srs_error_t err = srs_success;
 
-    if ((err = _srs_rtc_dtls_certificate->initialize()) != srs_success) {
+    // if ((err = _srs_rtc_dtls_certificate->initialize()) != srs_success) {
+    // by chennin 4 Signaling separation
+    if ((err = _srs_rtc_dtls_certificate->init()) != srs_success) {
         return srs_error_wrap(err, "rtc dtls certificate initialize");
     }
 

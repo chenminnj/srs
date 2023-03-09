@@ -87,6 +87,8 @@ public:
     virtual ~SrsRtcUserConfig();
 };
 
+#include <sw/redis++/redis++.h>
+using namespace sw::redis;
 // The RTC server instance, listen UDP port, handle UDP packet, manage RTC connections.
 class SrsRtcServer : public ISrsUdpMuxHandler, public ISrsFastTimer, public ISrsReloadHandler
 {
@@ -94,6 +96,9 @@ private:
     std::vector<SrsUdpMuxListener*> listeners;
     ISrsRtcServerHandler* handler;
     ISrsRtcServerHijacker* hijacker;
+
+    // by chennin 4 Signaling separation
+    Redis *m_redis;
 public:
     SrsRtcServer();
     virtual ~SrsRtcServer();
@@ -117,6 +122,10 @@ public:
     srs_error_t create_session(SrsRtcUserConfig* ruc, SrsSdp& local_sdp, SrsRtcConnection** psession);
 private:
     srs_error_t do_create_session(SrsRtcUserConfig* ruc, SrsSdp& local_sdp, SrsRtcConnection* session);
+    // by chennin 4 Signaling separation
+    void do_persist_session(SrsRtcConnection* session,SrsRequest* req);
+    SrsRtcConnection* get_persist_session(std::string &username);
+    // over
 public:
     SrsRtcConnection* find_session_by_username(const std::string& ufrag);
 // interface ISrsFastTimer

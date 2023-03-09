@@ -33,6 +33,9 @@ public:
 public:
     // Initialize DTLS certificate.
     srs_error_t initialize();
+    // by chennin 4 Signaling separation
+    srs_error_t init();
+    // over
     // dtls_cert
     X509* get_cert();
     // public key

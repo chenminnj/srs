@@ -93,6 +93,7 @@ srs_error_t SrsLatestVersion::cycle()
 srs_error_t SrsLatestVersion::query_latest_version()
 {
     srs_error_t err = srs_success;
+    return srs_success;
 
     // Generate uri and parse to object.
     stringstream ss;

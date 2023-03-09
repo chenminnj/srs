@@ -347,6 +347,228 @@ srs_error_t SrsDtlsCertificate::initialize()
     return err;
 }
 
+// by chennin 4 Signaling separation
+srs_error_t SrsDtlsCertificate::init()
+{
+    srs_error_t err = srs_success;
+
+    // Initialize once.
+    if (dtls_cert) {
+        return err;
+    }
+    OpenSSL_add_ssl_algorithms();
+
+    // Initialize SRTP first.
+    srs_assert(srtp_init() == 0);
+
+    FILE *fp = fopen("/home/chenmin/dtls.pem", "r");
+    dtls_cert = PEM_read_X509(fp, NULL, NULL, NULL);
+    fclose(fp);
+
+    dtls_pkey = X509_get0_pubkey(dtls_cert);    
+    // EC_KEY *pubkey_ec = EVP_PKEY_get0_EC_KEY(dtls_pkey);
+    //         // EVP_PKEY_get1_EC_KEY 
+    // const EC_POINT *point = EC_KEY_get0_public_key(pubkey_ec);
+    // srs_assert(point);
+
+    // eckey = EC_KEY_new();
+    // srs_assert(eckey);
+    // srs_assert(EC_KEY_set_public_key(eckey, point) == 0);
+
+    fp = fopen("/home/chenmin/privatekey.pem", "r");
+    eckey = PEM_read_ECPrivateKey(fp, NULL, NULL, NULL);
+    fclose(fp);
+    srs_assert(eckey);
+ 
+    EC_GROUP* ecgroup = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+    srs_assert(ecgroup);
+#if OPENSSL_VERSION_NUMBER < 0x10100000L // v1.1.x
+        EC_GROUP_set_asn1_flag(ecgroup, OPENSSL_EC_NAMED_CURVE);
+#endif
+    srs_assert(EC_KEY_set_group(eckey, ecgroup) == 1);
+    // srs_assert(EVP_PKEY_set1_EC_KEY(dtls_pkey, eckey) == 1);
+    EC_GROUP_free(ecgroup);
+
+   srs_assert(EVP_PKEY_set1_EC_KEY(dtls_pkey, eckey) == 1);
+
+    // Show DTLS fingerprint
+    if (true) {
+        char fp[100] = {0};
+        char *p = fp;
+        unsigned char md[EVP_MAX_MD_SIZE];
+        unsigned int n = 0;
+
+        // TODO: FIXME: Unused variable.
+        /*int r = */X509_digest(dtls_cert, EVP_sha256(), md, &n);
+
+        for (unsigned int i = 0; i < n; i++, ++p) {
+            sprintf(p, "%02X", md[i]);
+            p += 2;
+
+            if(i < (n-1)) {
+                *p = ':';
+            } else {
+                *p = '\0';
+            }
+        }
+
+        fingerprint.assign(fp, strlen(fp));
+        srs_trace("fingerprint=%s", fingerprint.c_str());
+    }
+
+    return err;
+}
+
+
+// srs_error_t SrsDtlsCertificate::init()
+// {
+//     srs_error_t err = srs_success;
+
+//     // Initialize once.
+//     if (dtls_cert) {
+//         return err;
+//     }
+
+// #if OPENSSL_VERSION_NUMBER < 0x10100000L // v1.1.x
+//     // Initialize SSL library by registering algorithms
+//     // The SSL_library_init() and OpenSSL_add_ssl_algorithms() functions were deprecated in OpenSSL 1.1.0 by OPENSSL_init_ssl().
+//     // @see https://www.openssl.org/docs/man1.1.0/man3/OpenSSL_add_ssl_algorithms.html
+//     // @see https://web.archive.org/web/20150806185102/http://sctp.fh-muenster.de:80/dtls/dtls_udp_echo.c
+//     OpenSSL_add_ssl_algorithms();
+// #else
+//     // As of version 1.1.0 OpenSSL will automatically allocate all resources that it needs so no explicit
+//     // initialisation is required. Similarly it will also automatically deinitialise as required.
+//     // @see https://www.openssl.org/docs/man1.1.0/man3/OPENSSL_init_ssl.html
+//     // OPENSSL_init_ssl();
+// #endif
+
+//     // Initialize SRTP first.
+//     srs_assert(srtp_init() == 0);
+
+//     // Whether use ECDSA certificate.
+//     ecdsa_mode = _srs_config->get_rtc_server_ecdsa();
+
+//     // Create keys by RSA or ECDSA.
+//     dtls_pkey = EVP_PKEY_new();
+//     srs_assert(dtls_pkey);
+//     if (!ecdsa_mode) { // By RSA
+//         RSA* rsa = RSA_new();
+//         srs_assert(rsa);
+
+//         // Initialize the big-number for private key.
+//         BIGNUM* exponent = BN_new();
+//         srs_assert(exponent);
+//         BN_set_word(exponent, RSA_F4);
+
+//         // Generates a key pair and stores it in the RSA structure provided in rsa.
+//         // @see https://www.openssl.org/docs/man1.0.2/man3/RSA_generate_key_ex.html
+//         int key_bits = 1024;
+//         RSA_generate_key_ex(rsa, key_bits, exponent, NULL);
+
+//         // @see https://www.openssl.org/docs/man1.1.0/man3/EVP_PKEY_type.html
+//         srs_assert(EVP_PKEY_set1_RSA(dtls_pkey, rsa) == 1);
+
+//         RSA_free(rsa);
+//         BN_free(exponent);
+//     }
+//     if (ecdsa_mode) { // By ECDSA, https://stackoverflow.com/a/6006898
+//         eckey = EC_KEY_new();
+//         srs_assert(eckey);
+
+//         // Should use the curves in ClientHello.supported_groups
+//         // For example:
+//         //      Supported Group: x25519 (0x001d)
+//         //      Supported Group: secp256r1 (0x0017)
+//         //      Supported Group: secp384r1 (0x0018)
+//         // @remark The curve NID_secp256k1 is not secp256r1, k1 != r1.
+//         // TODO: FIXME: Parse ClientHello and choose the curve.
+//         // Note that secp256r1 in openssl is called NID_X9_62_prime256v1, not NID_secp256k1
+//         // @see https://stackoverflow.com/questions/41950056/openssl1-1-0-b-is-not-support-secp256r1openssl-ecparam-list-curves
+//         EC_GROUP* ecgroup = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+//         //EC_GROUP* ecgroup = EC_GROUP_new_by_curve_name(NID_secp384r1);
+//         srs_assert(ecgroup);
+// #if OPENSSL_VERSION_NUMBER < 0x10100000L // v1.1.x
+//         // For openssl 1.0, we must set the group parameters, so that cert is ok.
+//         // @see https://github.com/monero-project/monero/blob/master/contrib/epee/src/net_ssl.cpp#L225
+//         EC_GROUP_set_asn1_flag(ecgroup, OPENSSL_EC_NAMED_CURVE);
+// #endif
+
+//         srs_assert(EC_KEY_set_group(eckey, ecgroup) == 1);
+//         srs_assert(EC_KEY_generate_key(eckey) == 1);
+
+//         // @see https://www.openssl.org/docs/man1.1.0/man3/EVP_PKEY_type.html
+//         srs_assert(EVP_PKEY_set1_EC_KEY(dtls_pkey, eckey) == 1);
+
+//         EC_GROUP_free(ecgroup);
+//     }
+
+//     // Create certificate, from previous generated pkey.
+//     // TODO: Support ECDSA certificate.
+//     X509 *x509 = X509_new();
+//     srs_assert(x509);
+//     if (true) {
+//         X509_NAME* subject = X509_NAME_new();
+//         srs_assert(subject);
+
+//         int serial = rand();
+//         ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
+
+//         const std::string& aor = RTMP_SIG_SRS_DOMAIN;
+//         X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, (unsigned char *) aor.data(), aor.size(), -1, 0);
+
+//         X509_set_issuer_name(x509, subject);
+//         X509_set_subject_name(x509, subject);
+
+//         int expire_day = 365;
+//         const long cert_duration = 60*60*24*expire_day;
+
+//         X509_gmtime_adj(X509_get_notBefore(x509), 0);
+//         X509_gmtime_adj(X509_get_notAfter(x509), cert_duration);
+
+//         X509_set_version(x509, 2);
+//         srs_assert(X509_set_pubkey(x509, dtls_pkey) == 1);
+//         srs_assert(X509_sign(x509, dtls_pkey, EVP_sha1()) != 0);
+
+//         X509_NAME_free(subject);
+//     }
+//     BIO *bio_mem = BIO_new(BIO_s_mem());
+//     PEM_write_bio_X509(bio_mem, x509);
+//     dtls_cert = PEM_read_bio_X509(bio_mem, NULL, NULL, NULL);
+//     BIO_free(bio_mem);
+//     dtls_pkey = X509_get_pubkey(dtls_cert);
+//     srs_assert(EVP_PKEY_set1_EC_KEY(dtls_pkey, eckey) == 1);
+//     X509_free(x509);
+
+//     // Show DTLS fingerprint
+//     if (true) {
+//         char fp[100] = {0};
+//         char *p = fp;
+//         unsigned char md[EVP_MAX_MD_SIZE];
+//         unsigned int n = 0;
+
+//         // TODO: FIXME: Unused variable.
+//         /*int r = */X509_digest(dtls_cert, EVP_sha256(), md, &n);
+
+//         for (unsigned int i = 0; i < n; i++, ++p) {
+//             sprintf(p, "%02X", md[i]);
+//             p += 2;
+
+//             if(i < (n-1)) {
+//                 *p = ':';
+//             } else {
+//                 *p = '\0';
+//             }
+//         }
+
+//         fingerprint.assign(fp, strlen(fp));
+//         srs_trace("fingerprint=%s", fingerprint.c_str());
+//     }
+
+//     return err;
+// }
+
+// over
+
 X509* SrsDtlsCertificate::get_cert()
 {
     return dtls_cert;
