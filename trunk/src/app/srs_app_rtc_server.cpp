@@ -602,13 +602,16 @@ void SrsRtcServer::do_persist_session(SrsRtcConnection* session,SrsRequest* req)
 }
 
 SrsRtcConnection* SrsRtcServer::get_persist_session(std::string& username){
-    // cid_
-    std::string cidStr = * m_redis->hget(username.c_str(), "cid_" );
-    SrsContextId cid_ = SrsContextId();
-    cid_.set_value(cidStr.c_str());
-    SrsRtcConnection* session = new SrsRtcConnection(this,cid_);
-
-    // req
+    SrsRtcUserConfig ruc;
+    ruc.eip_ = "";
+    ruc.codec_ = "";
+    ruc.publish_ = false;
+    ruc.dtls_ = true;
+    ruc.srtp_ = _srs_config->get_rtc_server_encrypt();
+    // get remote sdp from redis
+    std::string remote_sdp_str = * m_redis->hget(username.c_str(),"remoteSDP");
+    ruc.remote_sdp_.parse(remote_sdp_str); // TODO :checke error
+    // get req from redis
     std::string reqStr = * m_redis->hget(username.c_str(),"req");
     char *reqChars;
     reqChars = new char(reqStr.length()+1);
@@ -617,33 +620,125 @@ SrsRtcConnection* SrsRtcServer::get_persist_session(std::string& username){
     SrsRequest req;
     char *ptr; 
     ptr = strtok(reqChars, ":");
-    req.vhost = ptr;
+    ruc.req_->vhost = ptr;
     ptr = strtok(NULL, ":");
-    req.app = ptr;
+    ruc.req_->app = ptr;
     ptr = strtok(NULL, ":");
-    req.stream = ptr;
+    ruc.req_->stream = ptr;
 
     delete reqChars;
 
-    SrsSdp local_sdp,remote_sdp;
-    // remote sdp
-    std::string remote_sdp_str = * m_redis->hget(username.c_str(),"remoteSDP");
-    remote_sdp.parse(remote_sdp_str);
-    session->set_remote_sdp(remote_sdp);
- 
-    // local sdp
+    SrsSdp local_sdp; 
+    // TODO :checke error
+    // get local sdp from redis
     std::string local_sdp_str = * m_redis->hget(username.c_str(),"localSDP");
-    local_sdp.parse(local_sdp_str);
-    local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(req.vhost);
-    local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(req.vhost);
+    local_sdp.parse(local_sdp_str);     // Config for SDP and session.
+    local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(ruc.req_->vhost);
+    local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(ruc.req_->vhost);
+    
+    SrsRtcConnection* psession = NULL;
+    this->create_session4redis(&ruc, local_sdp, &psession);
+
+    return psession;
+}
+
+srs_error_t SrsRtcServer::create_session4redis(SrsRtcUserConfig* ruc, SrsSdp& local_sdp, SrsRtcConnection** psession)
+{
+    srs_error_t err = srs_success;
+
+    SrsRequest* req = ruc->req_;
+
+    SrsRtcSource* source = NULL;
+    if ((err = _srs_rtc_sources->fetch_or_create(req, &source)) != srs_success) {
+        return srs_error_wrap(err, "create source");
+    }
+
+    if (ruc->publish_ && !source->can_publish()) {
+        return srs_error_new(ERROR_RTC_SOURCE_BUSY, "stream %s busy", req->get_stream_url().c_str());
+    }
+
+    // TODO: FIXME: add do_create_session to error process.
+    // cid_  TODO :checke error
+    std::string username = local_sdp.get_ice_ufrag() + ":" + ruc->remote_sdp_.get_ice_ufrag();
+    std::string cidStr = * m_redis->hget(username.c_str(), "cid_" );
+    SrsContextId cid_ = SrsContextId();
+    cid_.set_value(cidStr.c_str());
+    SrsRtcConnection* session = new SrsRtcConnection(this, cid_);
+    if ((err = do_create_session4redis(ruc, local_sdp, session)) != srs_success) {
+        srs_freep(session);
+        return srs_error_wrap(err, "create session");
+    }
+
+    *psession = session;
+
+    return err;
+}
+
+srs_error_t SrsRtcServer::do_create_session4redis(SrsRtcUserConfig* ruc, SrsSdp& local_sdp, SrsRtcConnection* session)
+{
+    srs_error_t err = srs_success;
+
+    SrsRequest* req = ruc->req_;
+
+    // first add publisher/player for negotiate sdp media info
+    if (ruc->publish_) {
+        if ((err = session->add_publisher(ruc, local_sdp)) != srs_success) {
+            return srs_error_wrap(err, "add publisher");
+        }
+    } else {
+        if ((err = session->add_player(ruc, local_sdp)) != srs_success) {
+            return srs_error_wrap(err, "add player");
+        }
+    }
+
+    // All tracks default as inactive, so we must enable them.
+    session->set_all_tracks_status(req->get_stream_url(), ruc->publish_, true);
+
+    // std::string local_pwd = srs_random_str(32);
+    // std::string local_ufrag = "";
+    // // TODO: FIXME: Rename for a better name, it's not an username.
+    // std::string username = "";
+    // while (true) {
+    //     local_ufrag = srs_random_str(8);
+
+    //     username = local_ufrag + ":" + ruc->remote_sdp_.get_ice_ufrag();
+    //     if (!_srs_rtc_manager->find_by_name(username)) {
+    //         break;
+    //     }
+    // }
+
+    // local_sdp.set_ice_ufrag(local_ufrag);
+    // local_sdp.set_ice_pwd(local_pwd);
+    // local_sdp.set_fingerprint_algo("sha-256");
+    // local_sdp.set_fingerprint(_srs_rtc_dtls_certificate->get_fingerprint());
+
+    // // We allows to mock the eip of server.
+    // if (!ruc->eip_.empty()) {
+    //     string host;
+    //     // int port = _srs_config->get_rtc_server_listen();  by bluechen
+    //     int port = _srs_config->get_rtc_server_lbs_listen();
+    //     srs_parse_hostport(ruc->eip_, host, port);
+
+    //     local_sdp.add_candidate(host, port, "host");
+    //     srs_trace("RTC: Use candidate mock_eip %s as %s:%d", ruc->eip_.c_str(), host.c_str(), port);
+    // } else {
+    //     std::vector<string> candidate_ips = get_candidate_ips();
+    //     for (int i = 0; i < (int)candidate_ips.size(); ++i) {
+    //         // local_sdp.add_candidate(candidate_ips[i], _srs_config->get_rtc_server_listen(), "host"); by bluechen
+    //         local_sdp.add_candidate(candidate_ips[i], _srs_config->get_rtc_server_lbs_listen(), "host");
+    //     }
+    //     srs_trace("RTC: Use candidates %s", srs_join_vector_string(candidate_ips, ", ").c_str());
+    // }
+
+    // // Setup the negotiate DTLS by config.
+    local_sdp.session_negotiate_ = local_sdp.session_config_;
 
     // Setup the negotiate DTLS role.
-    local_sdp.session_negotiate_ = local_sdp.session_config_;
-    if (remote_sdp.get_dtls_role() == "active") {
+    if (ruc->remote_sdp_.get_dtls_role() == "active") {
         local_sdp.session_negotiate_.dtls_role = "passive";
-    } else if (remote_sdp.get_dtls_role() == "passive") {
+    } else if (ruc->remote_sdp_.get_dtls_role() == "passive") {
         local_sdp.session_negotiate_.dtls_role = "active";
-    } else if (remote_sdp.get_dtls_role() == "actpass") {
+    } else if (ruc->remote_sdp_.get_dtls_role() == "actpass") {
         local_sdp.session_negotiate_.dtls_role = local_sdp.session_config_.dtls_role;
     } else {
         // @see: https://tools.ietf.org/html/rfc4145#section-4.1
@@ -651,26 +746,94 @@ SrsRtcConnection* SrsRtcServer::get_persist_session(std::string& username){
         // is 'active' in the offer and 'passive' in the answer.
         local_sdp.session_negotiate_.dtls_role = "passive";
     }
-    // local_sdp.set_fingerprint(_srs_rtc_dtls_certificate->get_fingerprint());
     local_sdp.set_dtls_role(local_sdp.session_negotiate_.dtls_role);
-    
-    session->set_local_sdp(local_sdp);
 
+    session->set_remote_sdp(ruc->remote_sdp_);
+    // We must setup the local SDP, then initialize the session object.
+    session->set_local_sdp(local_sdp);
     session->set_state(WAITING_STUN);
 
-    // session initialize
-    srs_error_t err;
-    if ((err = session->initialize(&req, true, true, username)) != srs_success) {
-        srs_error("chenmin get_persist_session: init session failed. ret=%d", err);
-        return NULL;
+    std::string username = local_sdp.get_ice_ufrag() + ":" + ruc->remote_sdp_.get_ice_ufrag();
+    if ((err = session->initialize(req, ruc->dtls_, ruc->srtp_, username)) != srs_success) {
+        return srs_error_wrap(err, "init");
     }
 
+    // We allows username is optional, but it never empty here.
     _srs_rtc_manager->add_with_name(username, session);
-
-    srs_error("chenmin: session get from redis");
-
-    return session;
+ 
+    return err;
 }
+
+// SrsRtcConnection* SrsRtcServer::get_persist_session(std::string& username){
+//     // cid_
+//     std::string cidStr = * m_redis->hget(username.c_str(), "cid_" );
+//     SrsContextId cid_ = SrsContextId();
+//     cid_.set_value(cidStr.c_str());
+//     SrsRtcConnection* session = new SrsRtcConnection(this,cid_);
+
+//     // req
+//     std::string reqStr = * m_redis->hget(username.c_str(),"req");
+//     char *reqChars;
+//     reqChars = new char(reqStr.length()+1);
+//     strcpy(reqChars,reqStr.c_str());
+
+//     SrsRequest req;
+//     char *ptr; 
+//     ptr = strtok(reqChars, ":");
+//     req.vhost = ptr;
+//     ptr = strtok(NULL, ":");
+//     req.app = ptr;
+//     ptr = strtok(NULL, ":");
+//     req.stream = ptr;
+
+//     delete reqChars;
+
+//     SrsSdp local_sdp,remote_sdp;
+//     // remote sdp
+//     std::string remote_sdp_str = * m_redis->hget(username.c_str(),"remoteSDP");
+//     remote_sdp.parse(remote_sdp_str);
+//     session->set_remote_sdp(remote_sdp);
+ 
+//     // local sdp
+//     std::string local_sdp_str = * m_redis->hget(username.c_str(),"localSDP");
+//     local_sdp.parse(local_sdp_str);
+//     local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(req.vhost);
+//     local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(req.vhost);
+
+//     // Setup the negotiate DTLS role.
+//     local_sdp.session_negotiate_ = local_sdp.session_config_;
+//     if (remote_sdp.get_dtls_role() == "active") {
+//         local_sdp.session_negotiate_.dtls_role = "passive";
+//     } else if (remote_sdp.get_dtls_role() == "passive") {
+//         local_sdp.session_negotiate_.dtls_role = "active";
+//     } else if (remote_sdp.get_dtls_role() == "actpass") {
+//         local_sdp.session_negotiate_.dtls_role = local_sdp.session_config_.dtls_role;
+//     } else {
+//         // @see: https://tools.ietf.org/html/rfc4145#section-4.1
+//         // The default value of the setup attribute in an offer/answer exchange
+//         // is 'active' in the offer and 'passive' in the answer.
+//         local_sdp.session_negotiate_.dtls_role = "passive";
+//     }
+//     // local_sdp.set_fingerprint(_srs_rtc_dtls_certificate->get_fingerprint());
+//     local_sdp.set_dtls_role(local_sdp.session_negotiate_.dtls_role);
+    
+//     session->set_local_sdp(local_sdp);
+
+//     session->set_state(WAITING_STUN);
+
+//     // session initialize
+//     srs_error_t err;
+//     if ((err = session->initialize(&req, true, true, username)) != srs_success) {
+//         srs_error("chenmin get_persist_session: init session failed. ret=%d", err);
+//         return NULL;
+//     }
+
+//     _srs_rtc_manager->add_with_name(username, session);
+
+//     srs_error("chenmin: session get from redis");
+
+//     return session;
+// }
 // over
 
 SrsRtcConnection* SrsRtcServer::find_session_by_username(const std::string& username)

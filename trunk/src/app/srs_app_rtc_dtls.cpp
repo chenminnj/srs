@@ -361,7 +361,7 @@ srs_error_t SrsDtlsCertificate::init()
     // Initialize SRTP first.
     srs_assert(srtp_init() == 0);
 
-    FILE *fp = fopen("/home/chenmin/dtls.pem", "r");
+    FILE *fp = fopen("/home/chenmin/ssl/dtls.pem", "r");
     dtls_cert = PEM_read_X509(fp, NULL, NULL, NULL);
     fclose(fp);
 
@@ -375,7 +375,7 @@ srs_error_t SrsDtlsCertificate::init()
     // srs_assert(eckey);
     // srs_assert(EC_KEY_set_public_key(eckey, point) == 0);
 
-    fp = fopen("/home/chenmin/privatekey.pem", "r");
+    fp = fopen("/home/chenmin/ssl/privatekey.pem", "r");
     eckey = PEM_read_ECPrivateKey(fp, NULL, NULL, NULL);
     fclose(fp);
     srs_assert(eckey);

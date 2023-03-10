@@ -125,6 +125,8 @@ private:
     // by chennin 4 Signaling separation
     void do_persist_session(SrsRtcConnection* session,SrsRequest* req);
     SrsRtcConnection* get_persist_session(std::string &username);
+    srs_error_t create_session4redis(SrsRtcUserConfig* ruc, SrsSdp& local_sdp, SrsRtcConnection** psession);
+    srs_error_t do_create_session4redis(SrsRtcUserConfig* ruc, SrsSdp& local_sdp, SrsRtcConnection* session);
     // over
 public:
     SrsRtcConnection* find_session_by_username(const std::string& ufrag);

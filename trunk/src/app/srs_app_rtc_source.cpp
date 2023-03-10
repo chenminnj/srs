@@ -2694,9 +2694,9 @@ SrsRtcSSRCGenerator* SrsRtcSSRCGenerator::instance()
 
 uint32_t SrsRtcSSRCGenerator::generate_ssrc()
 {
-    if (!ssrc_num) {
-        ssrc_num = ::getpid() * 10000 + ::getpid() * 100 + ::getpid();
-    }
+    // if (!ssrc_num) {
+    //     ssrc_num = ::getpid() * 10000 + ::getpid() * 100 + ::getpid();
+    // }
 
     return ++ssrc_num;
 }
