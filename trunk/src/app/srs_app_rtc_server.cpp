@@ -611,65 +611,61 @@ SrsRtcConnection* SrsRtcServer::get_persist_session(std::string& username){
     ruc.dtls_ = true;
     ruc.srtp_ = _srs_config->get_rtc_server_encrypt();
 
-    // std::unordered_map<std::string, std::string> m;
-    // m_redis->hgetall(username.c_str(), std::inserter(m, m.begin()));
-    // // try
-    // // {
-    //     // get remote sdp from redis
-    //     // TODO :checke error
-    //     std::string remote_sdp_str = m.at("remoteSDP");
-    //     ruc.remote_sdp_.parse( remote_sdp_str ); 
+    std::unordered_map<std::string, std::string> m;
+    m_redis->hgetall(username.c_str(), std::inserter(m, m.begin()));
+    if(m.size() == 0){
+        return NULL;
+    }
+    try {
+        // get remote sdp from redis
+        // TODO :checke error
+        std::string remote_sdp_str = m.at("remoteSDP");
+        ruc.remote_sdp_.parse( remote_sdp_str ); 
 
-    //     // get req from redis
-    //     std::string reqStr = m.at("req");
-    //     char *reqChars;
-    //     reqChars = new char(reqStr.length()+1);
-    //     strcpy(reqChars,reqStr.c_str());
+        // get req from redis
+        std::string reqStr = m.at("req");
+        vector<string> reqStrs = srs_string_split(reqStr, ":");
+        if( reqStrs.size()>=3 ){
+            ruc.req_->vhost  = reqStrs[0];
+            ruc.req_->app    = reqStrs[1];
+            ruc.req_->stream = reqStrs[2];
+        }else{
+            //TODO
+            return NULL;
+        }
 
-    //     char *ptr; 
-    //     ptr = strtok(reqChars, ":");
-    //     ruc.req_->vhost = ptr;
-    //     ptr = strtok(NULL, ":");
-    //     ruc.req_->app = ptr;
-    //     ptr = strtok(NULL, ":");
-    //     ruc.req_->stream = ptr;
-
-    //     delete reqChars;
-
-    //     // get local sdp from redis
-    //     std::string local_sdp_str = m.at("localSDP");
-    //     local_sdp.parse( local_sdp_str );     // Config for SDP and session.
-    //     local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(ruc.req_->vhost);
-    //     local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(ruc.req_->vhost);
-    // }
-    // catch(const out_of_range &e)
-    // {
-    //     srs_error("RTC conntion: get_persist_session error %s", e.what());
-    //     return NULL;
-    // }
-
-    // get remote sdp from redis
-    std::string remote_sdp_str = * m_redis->hget(username.c_str(),"remoteSDP");
-    ruc.remote_sdp_.parse(remote_sdp_str); // TODO :checke error
-    // get req from redis
-    std::string reqStr = * m_redis->hget(username.c_str(),"req");
-    vector<string> reqStrs = srs_string_split(reqStr, ":");
-    if( reqStrs.size()>=3 ){
-        ruc.req_->vhost  = reqStrs[0];
-        ruc.req_->app    = reqStrs[1];
-        ruc.req_->stream = reqStrs[2];
-    }else{
-        //TODO
+        // get local sdp from redis
+        std::string local_sdp_str = m.at("localSDP");
+        local_sdp.parse( local_sdp_str );     // Config for SDP and session.
+        local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(ruc.req_->vhost);
+        local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(ruc.req_->vhost);
+    } catch(const out_of_range &e) {
+        srs_error("RTC conntion: get_persist_session error %s", e.what());
         return NULL;
     }
 
-    // SrsSdp local_sdp; 
-    // TODO :checke error
-    // get local sdp from redis
-    std::string local_sdp_str = * m_redis->hget(username.c_str(),"localSDP");
-    local_sdp.parse(local_sdp_str);     // Config for SDP and session.
-    local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(ruc.req_->vhost);
-    local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(ruc.req_->vhost);
+    // // get remote sdp from redis
+    // std::string remote_sdp_str = * m_redis->hget(username.c_str(),"remoteSDP");
+    // ruc.remote_sdp_.parse(remote_sdp_str); // TODO :checke error
+    // // get req from redis
+    // std::string reqStr = * m_redis->hget(username.c_str(),"req");
+    // vector<string> reqStrs = srs_string_split(reqStr, ":");
+    // if( reqStrs.size()>=3 ){
+    //     ruc.req_->vhost  = reqStrs[0];
+    //     ruc.req_->app    = reqStrs[1];
+    //     ruc.req_->stream = reqStrs[2];
+    // }else{
+    //     //TODO
+    //     return NULL;
+    // }
+
+    // // SrsSdp local_sdp; 
+    // // TODO :checke error
+    // // get local sdp from redis
+    // std::string local_sdp_str = * m_redis->hget(username.c_str(),"localSDP");
+    // local_sdp.parse(local_sdp_str);     // Config for SDP and session.
+    // local_sdp.session_config_.dtls_role = _srs_config->get_rtc_dtls_role(ruc.req_->vhost);
+    // local_sdp.session_config_.dtls_version = _srs_config->get_rtc_dtls_version(ruc.req_->vhost);
     
     SrsRtcConnection* psession = NULL;
     this->create_session4redis(&ruc, local_sdp, &psession);
@@ -805,6 +801,11 @@ srs_error_t SrsRtcServer::on_timer(srs_utime_t interval)
 
         // Use manager to free session and notify other objects.
         _srs_rtc_manager->remove(session);
+
+        // by chennin 4 Signaling separation ,begin
+        // delete session in redis whatever
+        m_redis->del(username);
+        // end
     }
 
     // Ignore stats if no RTC connections.

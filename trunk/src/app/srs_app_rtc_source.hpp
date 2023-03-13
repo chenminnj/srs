@@ -646,6 +646,9 @@ private:
 public:
     static SrsRtcSSRCGenerator* instance();
     uint32_t generate_ssrc();
+    // by chennin 4 Signaling separation ,begin
+    uint32_t generate_ssrc(std::string &hashStr);
+    // end
 };
 
 #endif

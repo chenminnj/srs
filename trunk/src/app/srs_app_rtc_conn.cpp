@@ -3202,7 +3202,16 @@ srs_error_t SrsRtcConnection::negotiate_play_capability(SrsRtcUserConfig* ruc, s
                 }
             }
 
-            track->ssrc_ = SrsRtcSSRCGenerator::instance()->generate_ssrc();
+            // by chennin 4 Signaling separation ,begin
+            // track->ssrc_ = SrsRtcSSRCGenerator::instance()->generate_ssrc();
+            std::string strHash;
+            if(remote_media_desc.is_video() ){
+                strHash = ruc->req_->get_stream_url() + "/video"; 
+            }else{
+                strHash = ruc->req_->get_stream_url() + "/audio"; 
+            }
+            track->ssrc_ = SrsRtcSSRCGenerator::instance()->generate_ssrc(strHash);
+            // end
             
             // TODO: FIXME: set audio_payload rtcp_fbs_,
             // according by whether downlink is support transport algorithms.

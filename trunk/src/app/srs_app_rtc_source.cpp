@@ -2694,10 +2694,18 @@ SrsRtcSSRCGenerator* SrsRtcSSRCGenerator::instance()
 
 uint32_t SrsRtcSSRCGenerator::generate_ssrc()
 {
-    // if (!ssrc_num) {
-    //     ssrc_num = ::getpid() * 10000 + ::getpid() * 100 + ::getpid();
-    // }
+    if (!ssrc_num) {
+        ssrc_num = ::getpid() * 10000 + ::getpid() * 100 + ::getpid();
+    }
 
     return ++ssrc_num;
 }
+
+// by chennin 4 Signaling separation ,begin
+#include <functional>
+uint32_t SrsRtcSSRCGenerator::generate_ssrc(std::string &hashStr)
+{
+    return std::hash<std::string>{}(hashStr);
+}
+// end
 
