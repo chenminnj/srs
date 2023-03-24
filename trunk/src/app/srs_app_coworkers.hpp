@@ -22,7 +22,7 @@ class SrsCoWorkers
 private:
     static SrsCoWorkers* _instance;
 private:
-    std::map<std::string, SrsRequest*> streams;
+    std::map<std::string, SrsRequest*> *streams;
 private:
     SrsCoWorkers();
     virtual ~SrsCoWorkers();

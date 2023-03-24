@@ -21,16 +21,18 @@ SrsCoWorkers* SrsCoWorkers::_instance = NULL;
 
 SrsCoWorkers::SrsCoWorkers()
 {
+    streams = new std::map<std::string, SrsRequest*>();
 }
 
 SrsCoWorkers::~SrsCoWorkers()
 {
     map<string, SrsRequest*>::iterator it;
-    for (it = streams.begin(); it != streams.end(); ++it) {
+    for (it = streams->begin(); it != streams->end(); ++it) {
         SrsRequest* r = it->second;
         srs_freep(r);
     }
-    streams.clear();
+    streams->clear();
+    delete streams;
 }
 
 SrsCoWorkers* SrsCoWorkers::instance()
@@ -114,8 +116,8 @@ SrsRequest* SrsCoWorkers::find_stream_info(string vhost, string app, string stre
     
     // Get stream information from local cache.
     string url = srs_generate_stream_url(conf->arg0(), app, stream);
-    map<string, SrsRequest*>::iterator it = streams.find(url);
-    if (it == streams.end()) {
+    map<string, SrsRequest*>::iterator it = streams->find(url);
+    if (it == streams->end()) {
         return NULL;
     }
     
@@ -129,13 +131,14 @@ srs_error_t SrsCoWorkers::on_publish(SrsLiveSource* s, SrsRequest* r)
     string url = r->get_stream_url();
     
     // Delete the previous stream informations.
-    map<string, SrsRequest*>::iterator it = streams.find(url);
-    if (it != streams.end()) {
+    map<string, SrsRequest*>::iterator it = streams->find(url);
+    if (it != streams->end()) {
         srs_freep(it->second);
     }
     
     // Always use the latest one.
-    streams[url] = r->copy();
+    streams->insert(std::pair<std::string, SrsRequest*>(url,r->copy()));
+    // streams[url] = r->copy();
     
     return err;
 }
@@ -144,10 +147,10 @@ void SrsCoWorkers::on_unpublish(SrsLiveSource* s, SrsRequest* r)
 {
     string url = r->get_stream_url();
     
-    map<string, SrsRequest*>::iterator it = streams.find(url);
-    if (it != streams.end()) {
+    map<string, SrsRequest*>::iterator it = streams->find(url);
+    if (it != streams->end()) {
         srs_freep(it->second);
-        streams.erase(it);
+        streams->erase(it);
     }
 }
 
