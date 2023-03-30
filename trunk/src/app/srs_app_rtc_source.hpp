@@ -160,10 +160,12 @@ public:
 // A Source is a stream, to publish and to play with, binding to SrsRtcPublishStream and SrsRtcPlayStream.
 class SrsRtcSource : public ISrsFastTimer
 {
-    // for webrtc client use rtmp upstream
+    // chenmin begin 4 rtmp upstream
 private:
     SrsLiveConsumer *liveConsumer4RtmpUpstream_;    
     SrsRtcFromRtmpBridger *bridger4RtmpUpstream_;
+    int timer_count_;
+    bool need_releaseUpstream_;
     srs_mutex_t lock;
     // over
 private:

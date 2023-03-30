@@ -333,8 +333,12 @@ SrsRtcSource::SrsRtcSource()
 
     pli_for_rtmp_ = pli_elapsed_ = 0;
 
+    // chenmin begin 4 rtmp upstream
     bridger4RtmpUpstream_ = NULL;
     liveConsumer4RtmpUpstream_ = NULL;
+    timer_count_ = 0;
+    need_releaseUpstream_ = false;
+    // chenmin end
     lock = srs_mutex_new();
 }
 
@@ -475,6 +479,7 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
     consumers.push_back(consumer);
 
     // TODO: FIXME: Implements edge cluster.
+    // chenmin begin 4 rtmp upstream
     if (_srs_config->get_vhost_is_edge(req->vhost)) {
         if ( can_publish() ) {
             // 1. 创建 rtmp source
@@ -482,7 +487,7 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
             if ((err = _srs_sources->fetch_or_create(req, _srs_hybrid->srs()->instance(), &rtmpSourceUpstream)) != srs_success) {
                 return srs_error_wrap(err, "create source");
             } 
-            rtmpSourceUpstream->set_cache(true);
+            rtmpSourceUpstream->set_cache(false);
 
             // 2. 创建 SrsRtcFromRtmpBridger 传给 rtmp source
             // 当这路流的没有消费者时，这个bridge会被销毁，需要重新创建
@@ -498,9 +503,12 @@ srs_error_t SrsRtcSource::create_consumer(SrsRtcConsumer*& consumer)
                     srs_freep(liveConsumer4RtmpUpstream_);
                     return srs_error_wrap(err, "rtmp: create consumer");
                 }
+                //3. 延时删除 liveConsumer4RtmpUpstream_
+                _srs_hybrid->timer5s()->subscribe(this);
             }
         }        
     }
+    // chenmin end
 
     return err;
 }
@@ -525,12 +533,12 @@ void SrsRtcSource::on_consumer_destroy(SrsRtcConsumer* consumer)
         consumers.erase(it);
     }
 
-    // // for rtmp upstream
+    // chenmin begin 4 rtmp upstream
     if( consumers.empty() ){
-        srs_freep(liveConsumer4RtmpUpstream_); 
-        // rtmp live consumer销毁时，会调用source的on_consumer_destroy， 当所source有的consumer都销毁时，会调用 play_edge->on_all_client_stop() 再调 ingester->stop() 触发 SrsLiveSource::on_unpublish 已经把bridger4RtmpUpstream_ 析构了
-        bridger4RtmpUpstream_ = NULL;
+        need_releaseUpstream_ = true;
+        timer_count_ = 0;
     }
+    // chenmin end
 
     // When all consumers finished, notify publisher to handle it.
     if (publish_stream_ && consumers.empty()) {
@@ -716,6 +724,24 @@ srs_error_t SrsRtcSource::on_timer(srs_utime_t interval)
     srs_error_t err = srs_success;
 
     if (!publish_stream_) {
+        // chenmin begin 4 rtmp upstream
+        if (need_releaseUpstream_) {
+            ++timer_count_;
+            if (!consumers.empty()) {
+                need_releaseUpstream_ = false;
+                timer_count_ = 0;
+            }else {
+                if (timer_count_ >= 12) { // one minutes
+                    timer_count_ = 0;
+                    srs_freep(liveConsumer4RtmpUpstream_); 
+                    // rtmp live consumer销毁时，会调用source的on_consumer_destroy， 当所source有的consumer都销毁时，会调用 play_edge->on_all_client_stop() 再调 ingester->stop() 触发 SrsLiveSource::on_unpublish 已经把bridger4RtmpUpstream_ 析构了
+                    bridger4RtmpUpstream_ = NULL;
+
+                    _srs_hybrid->timer5s()->unsubscribe(this);
+                }
+            }
+        }
+        // chenmin end
         return err;
     }
 
