@@ -191,6 +191,7 @@ srs_error_t SrsEdgeIngester::start()
     
     srs_freep(trd);
     trd = new SrsSTCoroutine("edge-igs", this);
+    ((SrsSTCoroutine*)trd)->set_stack_size(1 << 18);
     
     if ((err = trd->start()) != srs_success) {
         return srs_error_wrap(err, "coroutine");
