@@ -134,7 +134,7 @@ Ubuntu_prepare; ret=$?; if [[ 0 -ne $ret ]]; then echo "Install tools for ubuntu
 OS_IS_CENTOS=NO
 function Centos_prepare()
 {
-    if [[ ! -f /etc/redhat-release ]]; then
+    if [[ ! -f /etc/redhat-release ]] && [[ ! -f /etc/anolis-release ]]; then
         return 0;
     fi
 

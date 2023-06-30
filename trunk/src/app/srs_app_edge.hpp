@@ -99,7 +99,7 @@ public:
 // The edge used to ingest stream from origin.
 class SrsEdgeIngester : public ISrsCoroutineHandler
 {
-private:
+protected:
     SrsLiveSource* source;
     SrsPlayEdge* edge;
     SrsRequest* req;
@@ -121,6 +121,7 @@ private:
     virtual srs_error_t do_cycle();
 private:
     virtual srs_error_t ingest(std::string& redirect);
+public:
     virtual srs_error_t process_publish_message(SrsCommonMessage* msg, std::string& redirect);
 };
 

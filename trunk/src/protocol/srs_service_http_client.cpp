@@ -93,7 +93,7 @@ srs_error_t SrsSslClient::handshake()
         return srs_error_new(ERROR_HTTPS_HANDSHAKE, "handshake r0=%d, r1=%d", r0, r1);
     }
 
-    uint8_t* data = NULL;
+    char* data = NULL;
     int size = BIO_get_mem_data(bio_out, &data);
     if (!data || size <= 0) {
         return srs_error_new(ERROR_HTTPS_HANDSHAKE, "handshake data=%p, size=%d", data, size);
@@ -236,7 +236,7 @@ srs_error_t SrsSslClient::write(void* plaintext, size_t nn_plaintext, ssize_t* n
             *nwrite += (ssize_t)r0;
         }
 
-        uint8_t* data = NULL;
+        char* data = NULL;
         int size = BIO_get_mem_data(bio_out, &data);
         if ((err = transport->write(data, size, NULL)) != srs_success) {
             return srs_error_wrap(err, "https: write data=%p, size=%d", data, size);

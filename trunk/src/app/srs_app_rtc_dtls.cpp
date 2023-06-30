@@ -365,7 +365,7 @@ srs_error_t SrsDtlsCertificate::init()
     dtls_cert = PEM_read_X509(fp, NULL, NULL, NULL);
     fclose(fp);
 
-    dtls_pkey = X509_get0_pubkey(dtls_cert);    
+    dtls_pkey = X509_get_pubkey(dtls_cert);    
     // EC_KEY *pubkey_ec = EVP_PKEY_get0_EC_KEY(dtls_pkey);
     //         // EVP_PKEY_get1_EC_KEY 
     // const EC_POINT *point = EC_KEY_get0_public_key(pubkey_ec);
@@ -672,7 +672,7 @@ srs_error_t SrsDtlsImpl::initialize(std::string version, std::string role)
     //              S(status) = 0xf = release   // 1.1.1b release
     // @note Status 0 for development, 1 to e for betas 1 to 14, and f for release.
 #if OPENSSL_VERSION_NUMBER >= 0x1010102fL // 1.1.1b
-    DTLS_set_timer_cb(dtls, dtls_timer_cb);
+    // DTLS_set_timer_cb(dtls, dtls_timer_cb);
 #endif
 
     if ((bio_in = BIO_new(BIO_s_mem())) == NULL) {

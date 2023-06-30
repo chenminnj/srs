@@ -632,7 +632,7 @@ srs_error_t SrsSslConnection::handshake(string key_file, string crt_file)
     SSL_set_accept_state(ssl);
     SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
 
-    uint8_t* data = NULL;
+    char* data = NULL;
     int r0, r1, size;
 
     // Setup the key and cert file for server.
@@ -840,7 +840,7 @@ srs_error_t SrsSslConnection::write(void* plaintext, size_t nn_plaintext, ssize_
             *nwrite += (ssize_t)r0;
         }
 
-        uint8_t* data = NULL;
+        char* data = NULL;
         int size = BIO_get_mem_data(bio_out, &data);
         if ((err = transport->write(data, size, NULL)) != srs_success) {
             return srs_error_wrap(err, "https: write data=%p, size=%d", data, size);

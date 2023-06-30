@@ -1233,6 +1233,21 @@ srs_error_t SrsServer::listen_rtmp()
             srs_error_wrap(err, "rtmp listen %s:%d", ip.c_str(), port);
         }
     }
+
+    // add by chenmin 4 quic
+    close_listeners(SrsListenerRtmpOverQuic);
+    if (true) {
+        SrsListener* listener = new SrsBufferListener(this, SrsListenerRtmpOverQuic);
+        listeners.push_back(listener);
+
+        int port; string ip;
+        // srs_parse_endpoint(ip_ports[i], ip, port);
+        port = 12345;        
+        if ((err = listener->listen(ip, port)) != srs_success) {
+            srs_error_wrap(err, "rtmp over quic listen %s:%d", ip.c_str(), port);
+        }        
+    }
+    // end
     
     return err;
 }

@@ -57,6 +57,10 @@ enum SrsListenerType
     SrsListenerHttpsApi = 8,
     // HTTPS stream,
     SrsListenerHttpsStream = 9,
+
+    // add by chenmin 4 quic
+    SrsListenerRtmpOverQuic = 10,
+    // end
 };
 
 // A common tcp listener, for RTMP/HTTP server.

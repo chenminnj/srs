@@ -24,6 +24,7 @@ using namespace srs_internal;
 #include <openssl/hmac.h>
 // for openssl_generate_key
 #include <openssl/dh.h>
+#include <openssl/bn.h>
 
 // For randomly generate the handshake bytes.
 #define RTMP_SIG_SRS_HANDSHAKE RTMP_SIG_SRS_KEY "(" RTMP_SIG_SRS_VERSION ")"
