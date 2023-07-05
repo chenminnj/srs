@@ -49,7 +49,14 @@ class SrsQuicFlvDecoder {
     virtual void read_previous_tag_size(const char *th, char previous_tag_size[4]);
 };
 
-class SrsEdgeQuicUpstream : public SrsQuicNetWorkBase, public SrsEdgeUpstream {
+class SrsEdgeQuicUpstream : public ISrsHourGlass, public SrsEdgeUpstream {
+  private:
+    SrsHourGlass *m_pTimer;
+    SrsQuicState *m_State;
+
+    struct lsquic_engine_api m_engine_api;
+    struct lsquic_stream_if m_stream_if;
+
   private:
     SrsEdgeIngester *m_pSrsEdgeIngester;
     // We might modify the request by HTTP redirect.
@@ -65,18 +72,21 @@ class SrsEdgeQuicUpstream : public SrsQuicNetWorkBase, public SrsEdgeUpstream {
 
   public:
     virtual srs_error_t connect(SrsRequest *r, SrsLbRoundRobin *lb);
-    virtual int recv_message(const int nr, SrsCommonMessage **pmsg);
+    virtual srs_error_t recv_message(SrsCommonMessage **pmsg);
     virtual srs_error_t decode_message(SrsCommonMessage *msg, SrsPacket **ppacket);
     virtual void close();
+    virtual SrsQuicState *getSrsQuicState() { return m_State; }
 
   public:
     virtual void selected(std::string &server, int &port);
     virtual void set_recv_timeout(srs_utime_t tm);
     virtual void kbps_sample(const char *label, int64_t age);
-    int init_ssl_ctx();
 
   private:
-    srs_error_t do_quic_connect(SrsRequest *r, SrsLbRoundRobin *lb);
+    srs_error_t do_quic_connect();
+    int init_ssl_ctx();
+    virtual int read_message(const int nr, SrsCommonMessage **pmsg);
+    virtual srs_error_t notify(int event, srs_utime_t interval, srs_utime_t tick);
 
   private:
     /* quic客户端的回调函数 */

@@ -16,7 +16,8 @@ extern "C" {
 #include "srs_protocol_amf0.hpp"
 #include "srs_protocol_utility.hpp"
 #include "srs_rtmp_stack.hpp"
-#include "srs_app_config.hpp"
+#include "srs_kernel_utility.hpp"
+#include "srs_kernel_balance.hpp"
 
 SrsQuicEdgeIngester::SrsQuicEdgeIngester() {
 }
@@ -46,33 +47,70 @@ srs_error_t SrsQuicEdgeIngester::ingest(std::string &redirect) {
             upstream->kbps_sample(SRS_CONSTS_LOG_EDGE_PLAY, pprint->age());
         }
         SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = dynamic_cast<SrsEdgeQuicUpstream *>(upstream);
-        if ((err = pSrsEdgeQuicUpstream->udp_read_net_data()) != srs_success) {
-            return srs_error_wrap(err, "udp_read_net_data err");
+        if ((err = udp_read_net_data(pSrsEdgeQuicUpstream->getSrsQuicState(), 500 * SRS_UTIME_MILLISECONDS, this)) != srs_success) {
+            return srs_error_wrap(err, "udp read data err");
         }
     }
     return err;
 }
 
 SrsEdgeQuicUpstream::SrsEdgeQuicUpstream(SrsEdgeIngester *pSrsEdgeIngester) {
+    m_State = new SrsQuicState();
+    m_State->ssl_ctx = NULL;
+
+    m_pTimer = new SrsHourGlass("sources", this, 1 * SRS_UTIME_SECONDS);
+    m_State->m_pTimer = m_pTimer;
+
     m_pSrsEdgeIngester = pSrsEdgeIngester;
     m_pDecoder = new SrsQuicFlvDecoder();
 }
 
 SrsEdgeQuicUpstream::~SrsEdgeQuicUpstream() {
+    SSL_CTX_free(m_State->ssl_ctx);
+    m_State->ssl_ctx = NULL;
+
+    srs_close_stfd(m_State->srsNetfd);
+
+    srs_freep(m_State);
+    srs_freep(m_pTimer);
+    srs_freep(m_pDecoder);    
 }
 
 srs_error_t SrsEdgeQuicUpstream::connect(SrsRequest *r, SrsLbRoundRobin *lb) {
     srs_error_t err = srs_success;
 
     m_pReq = r;
-    if ((err = do_quic_connect(r, lb)) != srs_success) {
+
+    if (true) {
+        SrsConfDirective* conf = _srs_config->get_vhost_edge_origin(m_pReq->vhost);
+
+        if (!conf) {
+            return srs_error_new(ERROR_EDGE_VHOST_REMOVED, "vhost %s removed", m_pReq->vhost.c_str());
+        }
+        
+        // select the origin.
+        std::string server = lb->select(conf->args);
+        int port = SRS_CONSTS_RTMP_DEFAULT_PORT;
+        srs_parse_hostport(server, server, port);
+
+        // Remember the current selected server.
+        selected_ip = server;
+        selected_port = port;
+    }
+
+    if ((err = do_quic_connect()) != srs_success) {
         return srs_error_wrap(err, "do quic connect");
     };
 
     return err;
 }
 
-int SrsEdgeQuicUpstream::recv_message(const int nr, SrsCommonMessage **pmsg) {
+srs_error_t SrsEdgeQuicUpstream::recv_message(SrsCommonMessage **pmsg) {
+    // do nothing
+    return srs_success;
+}
+
+int SrsEdgeQuicUpstream::read_message(const int nr, SrsCommonMessage **pmsg) {
     srs_error_t err = srs_success;
 
     char type;
@@ -87,8 +125,7 @@ int SrsEdgeQuicUpstream::recv_message(const int nr, SrsCommonMessage **pmsg) {
 
     char *data = NULL;
     if (nr >= 11 + size) {
-        char *data = new char[size];
-        srs_freepa(data);
+        data = new char[size];
         m_pDecoder->read_tag_data(m_State->buf + m_State->buf_offset + m_State->buf_used, data, size);
         m_State->buf_used += size;
     } else {
@@ -113,6 +150,12 @@ int SrsEdgeQuicUpstream::recv_message(const int nr, SrsCommonMessage **pmsg) {
     *pmsg = msg;
 
     return 1;
+}
+
+srs_error_t SrsEdgeQuicUpstream::notify(int event, srs_utime_t interval, srs_utime_t tick) {
+    // TODO: return process_conns' error
+    process_conns(m_State);
+    return srs_success;
 }
 
 srs_error_t SrsEdgeQuicUpstream::decode_message(SrsCommonMessage *msg, SrsPacket **ppacket) {
@@ -147,18 +190,18 @@ void SrsEdgeQuicUpstream::close() {
     srs_freep(m_pDecoder);
 }
 
-srs_error_t SrsEdgeQuicUpstream::do_quic_connect(SrsRequest *r, SrsLbRoundRobin *lb) {
+srs_error_t SrsEdgeQuicUpstream::do_quic_connect() {
     srs_error_t err = srs_success;
 
     m_State->m_pSrsQuicNetWorkBase = (void *)this;
 
-    if ((err = create_sock(NULL, 0, &m_State->local_sas)) != srs_success) {
+    if ((err = create_sock(m_State, NULL, 0, &m_State->local_sas)) != srs_success) {
         return srs_error_wrap(err, "create udp sock error");
     }
 
-    if (srs_get_log_level(_srs_config->get_log_level()) > SrsLogLevelWarn) {
+    if (srs_get_log_level(_srs_config->get_log_level()) < SrsLogLevelWarn) {
         lsquic_log_to_fstream(stderr, LLTS_HHMMSSUS);
-        lsquic_set_log_level("debug");
+        lsquic_set_log_level("info");
     }
 
     lsquic_engine_init_settings(&m_State->engine_settings, 0);
@@ -185,8 +228,8 @@ srs_error_t SrsEdgeQuicUpstream::do_quic_connect(SrsRequest *r, SrsLbRoundRobin 
 
     m_engine_api.ea_settings = &m_State->engine_settings;
 
-    m_engine_api.ea_packets_out = SrsQuicNetWorkBase::send_packets_out;
-    m_engine_api.ea_packets_out_ctx = this;
+    m_engine_api.ea_packets_out = send_packets_out;
+    m_engine_api.ea_packets_out_ctx = m_State;
     m_engine_api.ea_stream_if = &m_stream_if;
     m_engine_api.ea_stream_if_ctx = this;
 
@@ -251,7 +294,7 @@ int SrsEdgeQuicUpstream::init_ssl_ctx() {
 }
 
 lsquic_conn_ctx_t *SrsEdgeQuicUpstream::client_on_new_conn_cb(void *ea_stream_if_ctx, lsquic_conn_t *conn) {
-    srs_info("On new connection");
+    srs_error("On new connection");
 
     lsquic_conn_make_stream(conn);
     SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = (SrsEdgeQuicUpstream *)ea_stream_if_ctx;
@@ -261,8 +304,8 @@ lsquic_conn_ctx_t *SrsEdgeQuicUpstream::client_on_new_conn_cb(void *ea_stream_if
 }
 
 void SrsEdgeQuicUpstream::client_on_conn_closed_cb(lsquic_conn_t *conn) {
-    srs_info("On connection close");
-    SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = (SrsEdgeQuicUpstream *) lsquic_conn_get_ctx(conn);
+    srs_error("On connection close");
+    SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = (SrsEdgeQuicUpstream *)lsquic_conn_get_ctx(conn);
     pSrsEdgeQuicUpstream->m_pTimer->stop();
 
     char errbuf[2048] = {0};
@@ -273,20 +316,24 @@ void SrsEdgeQuicUpstream::client_on_conn_closed_cb(lsquic_conn_t *conn) {
 }
 
 lsquic_stream_ctx_t *SrsEdgeQuicUpstream::client_on_new_stream_cb(void *ea_stream_if_ctx, lsquic_stream_t *stream) {
-    srs_info("On new stream");
+    srs_error("On new stream");
     SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = (SrsEdgeQuicUpstream *)ea_stream_if_ctx;
     // pSrsEdgeQuicUpstream->m_State->stream = stream;
 
     // write req to remote srs origin
-    string sendStr = pSrsEdgeQuicUpstream->m_pReq->host + "|" + pSrsEdgeQuicUpstream->m_pReq->app + "|" + pSrsEdgeQuicUpstream->m_pReq->stream;
+    string sendStr = "1|";
+    sendStr += pSrsEdgeQuicUpstream->m_pReq->host + "|" + pSrsEdgeQuicUpstream->m_pReq->app + "|" + pSrsEdgeQuicUpstream->m_pReq->stream;
 
     lsquic_stream_write(stream, sendStr.c_str(), sendStr.length());
     lsquic_stream_flush(stream);
 
     lsquic_stream_wantread(stream, 1);
-    pSrsEdgeQuicUpstream->process_conns(pSrsEdgeQuicUpstream->m_State);
 
     return (lsquic_stream_ctx_t *)ea_stream_if_ctx;
+}
+
+void SrsEdgeQuicUpstream::client_on_stream_close_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *st_h) {
+    srs_info("on client_on_stream_close_cb");
 }
 
 void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
@@ -300,12 +347,12 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
         srs_info("Read { %d } frome server: { %s } ", nr, pSrsEdgeQuicUpstream->m_State->buf + offset);
 
         pSrsEdgeQuicUpstream->m_State->buf_offset += nr;
-        srs_assert(pSrsEdgeQuicUpstream->m_State->buf_offset > sizeof(pSrsEdgeQuicUpstream->m_State->buf));
+        srs_assert(pSrsEdgeQuicUpstream->m_State->buf_offset <= sizeof(pSrsEdgeQuicUpstream->m_State->buf));
 
         SrsCommonMessage *msg = NULL;
         SrsAutoFree(SrsCommonMessage, msg);
 
-        if (pSrsEdgeQuicUpstream->recv_message(nr, &msg) == 1) {
+        if (pSrsEdgeQuicUpstream->read_message(nr, &msg) == 1) {
             string redirect = "";
             if (msg != NULL) {
                 pSrsEdgeQuicUpstream->m_pSrsEdgeIngester->process_publish_message(msg, redirect);

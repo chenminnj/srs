@@ -3609,7 +3609,7 @@ srs_error_t SrsConfig::check_normal_config()
             && n != "ff_log_level" && n != "grace_final_wait" && n != "force_grace_quit"
             && n != "grace_start_wait" && n != "empty_ip_ok" && n != "disable_daemon_for_docker"
             && n != "inotify_auto_reload" && n != "auto_reload_for_docker" && n != "tcmalloc_release_rate"
-            && n != "circuit_breaker" && n != "is_full"
+            && n != "circuit_breaker" && n != "is_full" && n != "quic_server"
             ) {
             return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "illegal directive %s", n.c_str());
         }
@@ -3858,7 +3858,7 @@ srs_error_t SrsConfig::check_normal_config()
                 for (int j = 0; j < (int)conf->directives.size(); j++) {
                     string m = conf->at(j)->name;
                     if (m != "mode" && m != "origin" && m != "token_traverse" && m != "vhost" && m != "debug_srs_upnode" && m != "coworkers"
-                        && m != "origin_cluster") {
+                        && m != "origin_cluster" && m != "quic") {
                         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "illegal vhost.cluster.%s of %s", m.c_str(), vhost->arg0().c_str());
                     }
                 }
@@ -8326,4 +8326,58 @@ SrsConfDirective* SrsConfig::get_stats_disk_device()
     }
     
     return conf;
+}
+
+bool SrsConfig::get_quic_server_enabled() {
+    static bool DEFAULT = false;
+    
+    SrsConfDirective* conf = root->get("quic_server");
+    if (!conf) {
+        return DEFAULT;
+    }
+    
+    conf = conf->get("enabled");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+    
+    return SRS_CONF_PERFER_FALSE(conf->arg0());
+}
+
+std::string SrsConfig::get_quic_server_listen() {
+    static string DEFAULT = "12345";
+    
+    SrsConfDirective* conf = root->get("quic_server");
+    
+    if (!conf) {
+        return DEFAULT;
+    }
+    
+    conf = conf->get("listen");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+    
+    return conf->arg0();
+}
+
+bool SrsConfig::get_quic_edge_enabled(std::string vhost) {
+    static bool DEFAULT = false;
+    
+   SrsConfDirective* conf = get_vhost(vhost);
+    if (!conf) {
+        return DEFAULT;
+    }
+    
+    conf = conf->get("cluster");
+    if (!conf) {
+        return DEFAULT;
+    }
+    
+    conf = conf->get("quic");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+    
+    return "on" == conf->arg0();
 }

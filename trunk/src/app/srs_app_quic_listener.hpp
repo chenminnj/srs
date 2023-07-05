@@ -2,6 +2,7 @@
 #ifndef SRS_APP_QUIC_LISTENER
 #define SRS_APP_QUIC_LISTENER
 
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <vector>
 
@@ -11,12 +12,12 @@ extern "C" {
 #include "lsquic.h"
 }
 
-#include "srs_app_hourglass.hpp"
-#include "srs_app_server.hpp"
-#include "openssl/ssl.h"
 #include "openssl/crypto.h"
 #include "openssl/pem.h"
+#include "openssl/ssl.h"
 #include "openssl/x509.h"
+#include "srs_app_hourglass.hpp"
+#include "srs_app_server.hpp"
 
 class SrsQuicConn;
 
@@ -51,6 +52,7 @@ struct lsquic_stream_ctx {
 typedef struct SrsQuicState {
     // lsquic
     int sockfd;
+    srs_netfd_t srsNetfd;
     struct sockaddr_storage local_sas;
     lsquic_engine_t *engine = NULL;
     struct lsquic_engine_settings engine_settings;
@@ -64,39 +66,25 @@ typedef struct SrsQuicState {
 
     SSL_CTX *ssl_ctx = NULL;
     lsquic_conn_t *m_quicConn;
+    SrsHourGlass *m_pTimer;
 } SrsQuicState;
 
-class SrsQuicNetWorkBase : public ISrsHourGlass {
-  protected:
+extern srs_error_t udp_read_net_data(SrsQuicState *state, srs_utime_t timeout, void *handle);
+extern int send_packets_out(void *ctx, const struct lsquic_out_spec *specs, unsigned n_specs);
+extern srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, struct sockaddr_storage *local_sas);
+extern struct sockaddr_in new_addr(const char *ip, unsigned int port);
+extern void process_conns(SrsQuicState *state);
+extern void tut_proc_ancillary(struct msghdr *msg,
+                               struct sockaddr_storage *storage, int *ecn);
+
+class SrsQuicListener : public SrsListener, public ISrsCoroutineHandler, public ISrsHourGlass {
+  private:
     SrsHourGlass *m_pTimer;
     SrsQuicState *m_State;
 
     struct lsquic_engine_api m_engine_api;
     struct lsquic_stream_if m_stream_if;
 
-  public:
-    SrsQuicNetWorkBase();
-    virtual ~SrsQuicNetWorkBase();
-
-  public:
-    virtual srs_error_t udp_read_net_data();
-
-  protected:
-    /* lsquic引擎内部调用函数 */
-    static int send_packets_out(void *ctx, const struct lsquic_out_spec *specs, unsigned n_specs);
-
-  protected:
-    srs_error_t create_sock(const char *ip, unsigned int port, struct sockaddr_storage *local_sas);
-    struct sockaddr_in new_addr(const char *ip, unsigned int port);
-    void process_conns(SrsQuicState *state);
-    virtual srs_error_t notify(int event, srs_utime_t interval, srs_utime_t tick);
-    void tut_proc_ancillary(struct msghdr *msg,
-                            struct sockaddr_storage *storage, int *ecn);
-};
-
-class SrsQuicListener : public SrsListener,
-                        public ISrsCoroutineHandler,
-                        public SrsQuicNetWorkBase {
   private:
     char m_alpn[256] = {0}; /* lsquic设置alpn的字符串 */
 
@@ -106,7 +94,7 @@ class SrsQuicListener : public SrsListener,
     std::string m_cert_file;
     std::string m_key_file;
 
-    map <string, SSL_CTX *> m_certs_map;  /* server端使用, first--唯一标志 */
+    map<string, SSL_CTX *> m_certs_map; /* server端使用, first--唯一标志 */
   public:
     SrsQuicListener(SrsServer *svr, SrsListenerType t);
     virtual ~SrsQuicListener();
@@ -128,12 +116,13 @@ class SrsQuicListener : public SrsListener,
 
     srs_error_t init_ssl_ctx();
     srs_error_t init_ssl_ctx_map();
+    virtual srs_error_t notify(int event, srs_utime_t interval, srs_utime_t tick);
 
     /* lsquic引擎内部调用函数 */
     static SSL_CTX *get_ssl_ctx(void *ctx, const struct sockaddr *);
     static struct ssl_ctx_st *lookup_cert(void *cert_lu_ctx, const struct sockaddr *sa_UNUSED, const char *sni);
     static int select_alpn(SSL *ssl, const unsigned char **out, unsigned char *outlen,
-                    const unsigned char *in, unsigned int inlen, void *arg);
+                           const unsigned char *in, unsigned int inlen, void *arg);
 };
 
 #endif

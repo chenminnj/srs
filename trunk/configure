@@ -174,7 +174,7 @@ if [[ $SRS_SRT == YES ]]; then
 fi
 
 # the link options, always use static link
-SrsLinkOptions="-ldl -lpthread -lredis++ -lhiredis";
+SrsLinkOptions="-ldl -lpthread -lredis++ -lhiredis -lz";
 if [[ $SRS_SSL == YES && $SRS_USE_SYS_SSL == YES ]]; then
     SrsLinkOptions="${SrsLinkOptions} -lssl -lcrypto";
 fi

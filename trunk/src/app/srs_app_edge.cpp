@@ -29,6 +29,7 @@ using namespace std;
 #include <srs_kernel_utility.hpp>
 #include <srs_kernel_balance.hpp>
 #include <srs_app_rtmp_conn.hpp>
+#include "srs_app_quic_edge.hpp"
 
 // when edge timeout, retry next.
 #define SRS_EDGE_INGESTER_TIMEOUT (5 * SRS_UTIME_SECONDS)
@@ -252,7 +253,11 @@ srs_error_t SrsEdgeIngester::do_cycle()
         }
         
         srs_freep(upstream);
-        upstream = new SrsEdgeRtmpUpstream(redirect);
+        if ( _srs_config->get_quic_edge_enabled(req->vhost) ) {
+            upstream = new SrsEdgeQuicUpstream(this);  
+        } else {
+            upstream = new SrsEdgeRtmpUpstream(redirect);            
+        }
         
         if ((err = source->on_source_id_changed(_srs_context->get_id())) != srs_success) {
             return srs_error_wrap(err, "on source id changed");
@@ -647,7 +652,6 @@ srs_error_t SrsEdgeForwarder::proxy(SrsCommonMessage* msg)
 SrsPlayEdge::SrsPlayEdge()
 {
     state = SrsEdgeStateInit;
-    ingester = new SrsEdgeIngester();
 }
 
 SrsPlayEdge::~SrsPlayEdge()
@@ -659,6 +663,12 @@ srs_error_t SrsPlayEdge::initialize(SrsLiveSource* source, SrsRequest* req)
 {
     srs_error_t err = srs_success;
     
+    if( _srs_config->get_quic_edge_enabled(req->vhost) ){
+        ingester = new SrsQuicEdgeIngester();
+    }else{
+        ingester = new SrsEdgeIngester();
+    }
+
     if ((err = ingester->initialize(source, this, req)) != srs_success) {
         return srs_error_wrap(err, "ingester(pull)");
     }

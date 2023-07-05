@@ -1080,6 +1080,13 @@ public:
     // The device name configed in args of directive.
     // @return the disk device name to stat. NULL if not configed.
     virtual SrsConfDirective* get_stats_disk_device();
+public:
+    // Whether quic server enabled.
+    virtual bool get_quic_server_enabled();
+    // Get the quic server listen port.
+    virtual std::string get_quic_server_listen();
+    // Get whether the quic edge upstream is on.
+    virtual bool get_quic_edge_enabled(std::string vhost);
 };
 
 #endif

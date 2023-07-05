@@ -37,6 +37,7 @@ using namespace std;
 #include <srs_app_coworkers.hpp>
 #include <srs_service_log.hpp>
 #include <srs_app_latest_version.hpp>
+#include "srs_app_quic_listener.hpp"
 
 std::string srs_listener_type2string(SrsListenerType type)
 {
@@ -833,6 +834,10 @@ srs_error_t SrsServer::listen()
         return srs_error_wrap(err, "stream caster listen");
     }
     
+    if ((err = listen_quic()) != srs_success) {
+        return srs_error_wrap(err, "quic listen");
+    }
+
     if ((err = conn_manager->start()) != srs_success) {
         return srs_error_wrap(err, "connection manager");
     }
@@ -1233,21 +1238,27 @@ srs_error_t SrsServer::listen_rtmp()
             srs_error_wrap(err, "rtmp listen %s:%d", ip.c_str(), port);
         }
     }
+    
+    return err;
+}
 
-    // add by chenmin 4 quic
-    close_listeners(SrsListenerRtmpOverQuic);
-    if (true) {
-        SrsListener* listener = new SrsBufferListener(this, SrsListenerRtmpOverQuic);
-        listeners.push_back(listener);
+srs_error_t SrsServer::listen_quic() {
+    srs_error_t err = srs_success;
 
-        int port; string ip;
-        // srs_parse_endpoint(ip_ports[i], ip, port);
-        port = 12345;        
-        if ((err = listener->listen(ip, port)) != srs_success) {
-            srs_error_wrap(err, "rtmp over quic listen %s:%d", ip.c_str(), port);
-        }        
+    if( _srs_config->get_quic_server_enabled() != true ) {
+        return err;
     }
-    // end
+    
+    // stream service port.
+    std::string ip = "0.0.0.0";
+    int port = atoi( _srs_config->get_quic_server_listen().c_str() );
+
+    SrsListener* listener = new SrsQuicListener(this, SrsListenerRtmpOverQuic);
+    listeners.push_back(listener);
+        
+    if ((err = listener->listen(ip, port)) != srs_success) {
+        srs_error_wrap(err, "quic listen %s:%d", ip.c_str(), port);
+    }
     
     return err;
 }

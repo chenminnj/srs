@@ -307,6 +307,7 @@ private:
 private:
     // listen at specified protocol.
     virtual srs_error_t listen_rtmp();
+    virtual srs_error_t listen_quic();
     virtual srs_error_t listen_http_api();
     virtual srs_error_t listen_https_api();
     virtual srs_error_t listen_http_stream();

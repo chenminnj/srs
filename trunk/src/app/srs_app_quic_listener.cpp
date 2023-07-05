@@ -1,5 +1,6 @@
 // add by chenmin 4 quic
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -7,7 +8,6 @@
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <algorithm>
 
 extern "C" {
 #include "lsquic.h"
@@ -24,18 +24,34 @@ extern "C" {
 #include "srs_rtmp_stack.hpp"
 
 SrsQuicListener::SrsQuicListener(SrsServer *svr, SrsListenerType t) : SrsListener(svr, t) {
+    m_State = new SrsQuicState();
+    m_State->ssl_ctx = NULL;
+
+    m_pTimer = new SrsHourGlass("sources", this, 1 * SRS_UTIME_SECONDS);
+    m_State->m_pTimer = m_pTimer;
+
     m_trd = new SrsSTCoroutine("quic listener", this, _srs_context->get_id());
     // TODO
-    m_cert_file = "/home/chenmin/dtls.pem";
-    m_key_file = "/home/chenmin/privatekey.pem";
+    m_cert_file = "/home/chenmin/ssl/dtls.pem";
+    m_key_file = "/home/chenmin/ssl/privatekey.pem";
 }
 
 SrsQuicListener::~SrsQuicListener() {
     m_trd->stop();
     srs_freep(m_trd);
+
+    SSL_CTX_free(m_State->ssl_ctx);
+    m_State->ssl_ctx = NULL;
+
+    srs_close_stfd(m_State->srsNetfd);
+
+    srs_freep(m_State);
+    srs_freep(m_pTimer);
 }
 
 srs_error_t SrsQuicListener::listen(std::string ip, int port) {
+    srs_error_t err = srs_success;
+
     const char *alpn = "quic4rtmp";
     size_t alpn_len = 0, all_len = 0;
     alpn_len = strlen(alpn);
@@ -44,12 +60,12 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
     m_alpn[all_len + 1 + alpn_len] = '\0';
 
     if (!m_cert_file.empty() && !m_key_file.empty()) {
-        if (0 != init_ssl_ctx_map()) {
-            return srs_error_new(ERROR_HTTPS_KEY_CRT, "init_ssl_ctx_map faile");
+        if ((err = init_ssl_ctx_map()) != srs_success) {
+            return srs_error_wrap(err, "init_ssl_ctx_map faile");
         }
 
-        if (0 != init_ssl_ctx()) {
-            return srs_error_new(ERROR_HTTPS_KEY_CRT, "init_ssl_ctx faile");
+        if ((err = init_ssl_ctx()) != srs_success) {
+            return srs_error_wrap(err, "init_ssl_ctx faile");
         }
     } else {
         return srs_error_new(ERROR_HTTPS_KEY_CRT, "Init server fail with missing cert or key file ");
@@ -60,14 +76,13 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
     // m_State->buf_total_size = 4096;
     // m_State->buf  = new char[m_State->buf_total_size];
     // memset(m_State->buf, 0, m_State->buf_total_size);
-    srs_error_t err;
-    if ((err = create_sock(ip.c_str(), port, &m_State->local_sas)) != srs_success) {
+    if ((err = create_sock(m_State, ip.c_str(), port, &m_State->local_sas)) != srs_success) {
         return srs_error_wrap(err, "create udp sock error");
     }
 
     if (srs_get_log_level(_srs_config->get_log_level()) > SrsLogLevelWarn) {
         lsquic_log_to_fstream(stderr, LLTS_HHMMSSUS);
-        lsquic_set_log_level("debug");
+        lsquic_set_log_level("info");
     }
 
     if (0 != lsquic_global_init(LSQUIC_GLOBAL_SERVER)) {
@@ -98,8 +113,8 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
 
     memset(&m_engine_api, 0, sizeof(m_engine_api));
     m_engine_api.ea_settings = &m_State->engine_settings;
-    m_engine_api.ea_packets_out = SrsQuicNetWorkBase::send_packets_out;
-    m_engine_api.ea_packets_out_ctx = (void *)this;
+    m_engine_api.ea_packets_out = send_packets_out;
+    m_engine_api.ea_packets_out_ctx = m_State;
     m_engine_api.ea_stream_if = &m_stream_if;
     m_engine_api.ea_stream_if_ctx = (void *)this;
 
@@ -119,7 +134,7 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
         return srs_error_wrap(err, "quic listener coroutine");
     }
 
-    return srs_success;
+    return err;
 }
 
 srs_error_t SrsQuicListener::cycle() {
@@ -128,7 +143,8 @@ srs_error_t SrsQuicListener::cycle() {
         if ((err = m_trd->pull()) != srs_success) {
             return srs_error_wrap(err, "quic listener thread");
         }
-        if ((err = udp_read_net_data()) != srs_success) {
+        srs_utime_t NO_TIMEOUT = -1;
+        if ((err = udp_read_net_data(m_State, NO_TIMEOUT, this)) != srs_success) {
             return srs_error_wrap(err, "quic listener thread");
         }
     }
@@ -152,7 +168,7 @@ srs_error_t SrsQuicListener::init_ssl_ctx() {
         return srs_error_new(ERROR_HTTPS_KEY_CRT, "SSL_CTX_set_tlsext_ticket_keys failed");
     }
 
-    srs_info("init_ssl_ctx SUCCESS");
+    srs_trace("init_ssl_ctx SUCCESS");
 
     return err;
 }
@@ -186,13 +202,18 @@ srs_error_t SrsQuicListener::init_ssl_ctx_map() {
         return srs_error_new(ERROR_HTTPS_KEY_CRT, "SSL_CTX_use_PrivateKey_file failed");
     }
 
-    ;
-    srs_info("set SSL session cache mode to 1 (was:{ %s })", SSL_CTX_set_session_cache_mode(ce_ssl_ctx, 1));
-
+    SSL_CTX_set_session_cache_mode(ce_ssl_ctx, 1);
     m_certs_map.emplace(key, ce_ssl_ctx);
-    srs_info("init_ssl_ctx_map SUCCESS");
+
+    srs_trace("init_ssl_ctx_map SUCCESS");
 
     return err;
+}
+
+srs_error_t SrsQuicListener::notify(int event, srs_utime_t interval, srs_utime_t tick) {
+    // TODO: return process_conns' error
+    process_conns(m_State);
+    return srs_success;
 }
 
 SSL_CTX *SrsQuicListener::get_ssl_ctx(void *ctx, const sockaddr *) {
@@ -222,7 +243,7 @@ struct ssl_ctx_st *SrsQuicListener::lookup_cert(void *cert_lu_ctx, const struct 
     }
 
     if (ret) {
-        srs_info("Get ssl_ctx { %p }", (void *)ret);
+        srs_trace("Get ssl_ctx { %p }", (void *)ret);
     }
 
     return ret;
@@ -232,7 +253,7 @@ int SrsQuicListener::select_alpn(SSL *ssl, const unsigned char **out, unsigned c
     int r = 0;
     SrsQuicListener *handle = (SrsQuicListener *)arg;
 
-    srs_trace("in [{ %c }] inlen { %d } m_alpn [{ %s }] m_alpn_size { %d }", in, inlen, handle->m_alpn, strlen(handle->m_alpn));
+    srs_trace("in [{ %s }] inlen { %d } m_alpn [{ %s }] m_alpn_size { %d }", in, inlen, handle->m_alpn, strlen(handle->m_alpn));
 
     r = SSL_select_next_proto((unsigned char **)out, outlen, in, inlen,
                               (unsigned char *)handle->m_alpn, strlen(handle->m_alpn));
@@ -245,7 +266,7 @@ int SrsQuicListener::select_alpn(SSL *ssl, const unsigned char **out, unsigned c
 }
 
 lsquic_conn_ctx_t *SrsQuicListener::server_on_new_conn_cb(void *ea_stream_if_ctx, lsquic_conn_t *conn) {
-    srs_info("On new connection");
+    srs_trace("On new connection");
     lsquic_conn_ctx *connCtx = new lsquic_conn_ctx;
     memset(connCtx, 0, sizeof(lsquic_conn_ctx));
 
@@ -259,15 +280,16 @@ lsquic_conn_ctx_t *SrsQuicListener::server_on_new_conn_cb(void *ea_stream_if_ctx
 }
 
 void SrsQuicListener::server_on_conn_closed_cb(lsquic_conn_t *conn) {
-    srs_info("On connection close");
-    SrsQuicListener *pSrsQuicListener = (SrsQuicListener *)lsquic_conn_get_ctx(conn);
+    srs_trace("On connection close");
+    lsquic_conn_ctx_t *connCtx = lsquic_conn_get_ctx(conn);
+
+    SrsQuicListener *pSrsQuicListener = (SrsQuicListener *)connCtx->m_pSrsQuicNetWorkBase;
     pSrsQuicListener->m_pTimer->stop();
 
     char errbuf[2048] = {0};
     lsquic_conn_status(conn, errbuf, 2048);
-    srs_info("udp server_on_conn_closed_cb,errbuf { %s }", errbuf);
+    srs_trace("udp server_on_conn_closed_cb,errbuf { %s }", errbuf);
 
-    lsquic_conn_ctx_t *connCtx = lsquic_conn_get_ctx(conn);
     if (connCtx) {
         SrsQuicListener *handle = (SrsQuicListener *)connCtx->m_pSrsQuicNetWorkBase;
         vector<lsquic_conn_ctx_t *>::iterator iter = find(handle->m_quicConns.begin(), handle->m_quicConns.end(), connCtx);
@@ -277,11 +299,11 @@ void SrsQuicListener::server_on_conn_closed_cb(lsquic_conn_t *conn) {
         delete connCtx;
     }
 
-    srs_info("client connection closed -- stop reading from socket");
+    srs_trace("client connection closed -- stop reading from socket");
 }
 
 lsquic_stream_ctx_t *SrsQuicListener::server_on_new_stream_cb(void *ea_stream_if_ctx, lsquic_stream_t *stream) {
-    srs_info("On new stream");
+    srs_trace("On new stream");
 
     lsquic_stream_ctx *streamCtx = new lsquic_stream_ctx;
 
@@ -296,7 +318,7 @@ lsquic_stream_ctx_t *SrsQuicListener::server_on_new_stream_cb(void *ea_stream_if
 }
 
 void SrsQuicListener::server_on_stream_close_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *streamCtx) {
-    srs_info("On close stream");
+    srs_trace("On close stream");
     if (streamCtx->m_pSrsQuicConn) {
         delete streamCtx->m_pSrsQuicConn;
     }
@@ -309,36 +331,39 @@ void SrsQuicListener::server_on_read_cb(lsquic_stream_t *stream, lsquic_stream_c
     ssize_t nr = lsquic_stream_read(stream, buf, sizeof(buf));
     if (nr > 0) {
         // fwrite(buf, 1, nread, stdout);
-        srs_info("Read { %d } frome server: { %s } ", nr, buf);
+        srs_trace("Read { %d } from remote: { %s } ", nr, buf);
 
-        // read req: host|live|livestream
-        SrsRequest *req = new SrsRequest();
-        SrsAutoFree(SrsRequest, req);
+        if (buf[0] == '1') {
+            // read quic client req: 1|host|live|livestream
+            SrsRequest *req = new SrsRequest();
+            SrsAutoFree(SrsRequest, req);
 
-        std::string strBuf = string(buf);
-        vector<string> strs = srs_string_split(strBuf, "|");
+            std::string strBuf = string(buf);
+            vector<string> strs = srs_string_split(strBuf, "|");
 
-        if (strs.size() >= 3) {
-            req->host = strs[0];
-            req->app = strs[1];
-            req->stream = strs[2];
+            if (strs.size() >= 4) {
+                req->host = strs[1];
+                req->app = strs[2];
+                req->stream = strs[3];
 
-            streamCtx->m_pSrsQuicConn->start(req);
-        } else {
-            srs_error("lsquic : read client request error,want host|live|livestream,but got %s", buf);
-            lsquic_conn_abort(lsquic_stream_conn(stream));
+                streamCtx->m_pSrsQuicConn->start(req);
+            } else {
+                srs_error("lsquic : read client request error,want host|live|livestream,but got %s", buf);
+                lsquic_conn_abort(lsquic_stream_conn(stream));
+            }
         }
+
         // fflush(stdout);
     } else if (nr == 0) {
         /* EOF */
-        srs_info(" read to end-of-stream: close it ");
+        srs_trace(" read to end-of-stream: close it ");
         lsquic_stream_shutdown(stream, 0);
     } else {
         srs_error(" read to end-of-stream: close and read from stdin again ");
         lsquic_conn_abort(lsquic_stream_conn(stream));
     }
-    // receive all messages from client, then drop them
-    lsquic_stream_wantread(stream, 0);
+    // TODO receive all messages from client, then drop them
+    // lsquic_stream_wantread(stream, 0);
 }
 
 void SrsQuicListener::server_on_write_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *streamCtx) {
@@ -350,34 +375,19 @@ void SrsQuicListener::server_on_write_cb(lsquic_stream_t *stream, lsquic_stream_
     // lsquic_stream_wantread(stream, 1);
 }
 
-SrsQuicNetWorkBase::SrsQuicNetWorkBase() {
-    m_State = new SrsQuicState;
-    m_State->ssl_ctx = NULL;
-
-    m_pTimer = new SrsHourGlass("sources", this, 1 * SRS_UTIME_SECONDS);
-}
-
-SrsQuicNetWorkBase::~SrsQuicNetWorkBase() {
-    SSL_CTX_free(m_State->ssl_ctx);
-    m_State->ssl_ctx = NULL;
-
-    srs_freep(m_State);
-    srs_freep(m_pTimer);
-}
-
-int SrsQuicNetWorkBase::send_packets_out(void *ctx, const lsquic_out_spec *specs, unsigned n_specs) {
+int send_packets_out(void *ctx, const lsquic_out_spec *specs, unsigned n_specs) {
     struct msghdr msg;
     unsigned n;
 
     memset(&msg, 0, sizeof(msg));
-    SrsQuicNetWorkBase *handle = (SrsQuicNetWorkBase *)ctx;
+    SrsQuicState *pState = (SrsQuicState *)ctx;
 
     for (n = 0; n < n_specs; ++n) {
         msg.msg_name = (void *)specs[n].dest_sa;
         msg.msg_namelen = sizeof(struct sockaddr_in);
         msg.msg_iov = specs[n].iov;
         msg.msg_iovlen = specs[n].iovlen;
-        if (sendmsg(handle->m_State->sockfd, &msg, 0) < 0) {
+        if (sendmsg(pState->sockfd, &msg, 0) < 0) {
             perror("cannot send\n");
             break;
         }
@@ -386,30 +396,43 @@ int SrsQuicNetWorkBase::send_packets_out(void *ctx, const lsquic_out_spec *specs
     return (int)n;
 }
 
-srs_error_t SrsQuicNetWorkBase::create_sock(const char *ip, unsigned int port, sockaddr_storage *local_sas) {
-    m_State->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (m_State->sockfd == -1) {
+srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, sockaddr_storage *local_sas) {
+    state->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (state->sockfd == -1) {
         return srs_error_new(ERROR_SOCKET_CREATE, "create udp socket error");
     }
 
     /* 非阻塞模式 */
-    int flags = fcntl(m_State->sockfd, F_GETFL);
+    int flags = fcntl(state->sockfd, F_GETFL);
     if (-1 == flags)
         return srs_error_new(ERROR_SOCKET_CREATE, "fcntl F_GETFL udp socket error");
 
     flags |= O_NONBLOCK;
-    if (0 != fcntl(m_State->sockfd, F_SETFL, flags))
+    if (0 != fcntl(state->sockfd, F_SETFL, flags))
         return srs_error_new(ERROR_SOCKET_CREATE, "fcntl F_SETFL udp socket error");
 
     /* ToS is used to get ECN value */
+    /* Set up the socket to return original destination address in ancillary data */
     int on = 1, s;
-    if ((s = setsockopt(m_State->sockfd, IPPROTO_IP, IP_RECVTOS, &on, sizeof(on))) != 0) {
+    if (AF_INET == sa->sa_family){
+        s = setsockopt(fd, IPPROTO_IP,
+#if defined(IP_RECVORIGDSTADDR)
+                                       IP_RECVTOS|IP_RECVORIGDSTADDR,
+#else
+                                       IP_RECVTOS|IP_PKTINFO,
+#endif
+                                                           &on, sizeof(on));
+    } else {
+        s = setsockopt(fd, IPPROTO_IPV6, IPV6_RECVTCLASS|IPV6_RECVPKTINFO, &on, sizeof(on));
+    }
+
+    if ( s != 0) {
         return srs_error_new(ERROR_SOCKET_CREATE, "setsockopt udp socket error");
     }
 
     if (ip != NULL) {
         struct sockaddr_in local_addr = new_addr(ip, port);
-        if (bind(m_State->sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
+        if (bind(state->sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
             return srs_error_new(ERROR_SOCKET_BIND, "bind udp port error");
         }
 
@@ -417,10 +440,15 @@ srs_error_t SrsQuicNetWorkBase::create_sock(const char *ip, unsigned int port, s
             return srs_error_new(ERROR_SOCKET_CREATE, "memcpy local_sas error\n");
         }
     }
+
+    if ((state->srsNetfd = srs_netfd_open_socket(state->sockfd)) == NULL) {
+        return srs_error_new(ERROR_ST_OPEN_SOCKET, "st open");
+    }
+
     return srs_success;
 }
 
-sockaddr_in SrsQuicNetWorkBase::new_addr(const char *ip, unsigned int port) {
+sockaddr_in new_addr(const char *ip, unsigned int port) {
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -428,7 +456,7 @@ sockaddr_in SrsQuicNetWorkBase::new_addr(const char *ip, unsigned int port) {
     return addr;
 }
 
-srs_error_t SrsQuicNetWorkBase::udp_read_net_data() {
+srs_error_t udp_read_net_data(SrsQuicState *state, srs_utime_t timeout, void *handle) {
     ssize_t nread;
     struct sockaddr_storage peer_sas, local_sas;
     unsigned char buf[4096];
@@ -443,33 +471,35 @@ srs_error_t SrsQuicNetWorkBase::udp_read_net_data() {
         .msg_control = ctl_buf,
         .msg_controllen = sizeof(ctl_buf),
     };
-    nread = recvmsg(m_State->sockfd, &msg, 0);
+    // nread = recvmsg(state->sockfd, &msg, 0);
+    nread = srs_recvmsg(state->srsNetfd, &msg, 0, timeout);
     if (-1 == nread) {
         if (!(EAGAIN == errno || EWOULDBLOCK == errno))
             return srs_error_new(ERROR_SOCKET_READ, "quic udp recvmsg: %s", strerror(errno));
 
+        srs_trace("read nothing......");
         return srs_success;
     }
 
-    srs_info("socket receive_size {}", nread);
+    srs_trace("socket receive_size { %d }", nread);
 
-    local_sas = m_State->local_sas;
+    local_sas = state->local_sas;
     // TODO handle ECN properly
     int ecn = 0;
 
     tut_proc_ancillary(&msg, &local_sas, &ecn);
 
-    (void)lsquic_engine_packet_in(m_State->engine, buf, nread,
+    (void)lsquic_engine_packet_in(state->engine, buf, nread,
                                   (struct sockaddr *)&local_sas,
                                   (struct sockaddr *)&peer_sas,
-                                  (void *)this, ecn);
+                                  (void *)handle, ecn);
 
-    process_conns(m_State);
+    process_conns(state);
     return srs_success;
 }
 
-void SrsQuicNetWorkBase::tut_proc_ancillary(struct msghdr *msg,
-                                            struct sockaddr_storage *storage, int *ecn) {
+void tut_proc_ancillary(struct msghdr *msg,
+                        struct sockaddr_storage *storage, int *ecn) {
     const struct in6_pktinfo *in6_pkt;
     struct cmsghdr *cmsg;
 
@@ -501,25 +531,19 @@ void SrsQuicNetWorkBase::tut_proc_ancillary(struct msghdr *msg,
     }
 }
 
-void SrsQuicNetWorkBase::process_conns(SrsQuicState *state) {
+void process_conns(SrsQuicState *state) {
     int diff;
 
-    m_pTimer->stop();
+    state->m_pTimer->stop();
     lsquic_engine_process_conns(state->engine);
     if (lsquic_engine_earliest_adv_tick(state->engine, &diff)) {
         if (diff <= LSQUIC_DF_CLOCK_GRANULARITY) {
             diff = LSQUIC_DF_CLOCK_GRANULARITY;
         }
-        m_pTimer->tick(diff);
-        m_pTimer->start();
+        state->m_pTimer->tick(diff);
+        state->m_pTimer->start();
     } else {
         srs_error("lsquic adv_tick  return abnormal");
     }
     return;
-}
-
-srs_error_t SrsQuicNetWorkBase::notify(int event, srs_utime_t interval, srs_utime_t tick) {
-    // TODO: return process_conns' error
-    process_conns(m_State);
-    return srs_success;
 }
