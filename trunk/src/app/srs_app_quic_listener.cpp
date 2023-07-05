@@ -76,7 +76,7 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
     // m_State->buf_total_size = 4096;
     // m_State->buf  = new char[m_State->buf_total_size];
     // memset(m_State->buf, 0, m_State->buf_total_size);
-    if ((err = create_sock(m_State, ip.c_str(), port, &m_State->local_sas)) != srs_success) {
+    if ((err = create_sock(m_State, ip.c_str(), port, &m_State->local_sas, true)) != srs_success) {
         return srs_error_wrap(err, "create udp sock error");
     }
 
@@ -396,7 +396,7 @@ int send_packets_out(void *ctx, const lsquic_out_spec *specs, unsigned n_specs) 
     return (int)n;
 }
 
-srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, sockaddr_storage *local_sas) {
+srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, sockaddr_storage *local_sas, bool isServer) {
     state->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (state->sockfd == -1) {
         return srs_error_new(ERROR_SOCKET_CREATE, "create udp socket error");
@@ -413,31 +413,40 @@ srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, 
 
     /* ToS is used to get ECN value */
     /* Set up the socket to return original destination address in ancillary data */
-    int on = 1, s;
-    if (AF_INET == sa->sa_family){
-        s = setsockopt(fd, IPPROTO_IP,
+    struct sockaddr_in local_addr = new_addr(ip, port);
+    int on = 1, s = 0, s1 = 0;
+    if (AF_INET == local_addr.sin_family) {
+        s = setsockopt(state->sockfd, IPPROTO_IP, IP_RECVTOS, &on, sizeof(on));
+        if (isServer == true) {
+            s1 = setsockopt(state->sockfd, IPPROTO_IP,
 #if defined(IP_RECVORIGDSTADDR)
-                                       IP_RECVTOS|IP_RECVORIGDSTADDR,
+                            IP_RECVORIGDSTADDR,
 #else
-                                       IP_RECVTOS|IP_PKTINFO,
+                            IP_PKTINFO,
 #endif
-                                                           &on, sizeof(on));
+                            &on, sizeof(on));
+        }
     } else {
-        s = setsockopt(fd, IPPROTO_IPV6, IPV6_RECVTCLASS|IPV6_RECVPKTINFO, &on, sizeof(on));
+        s = setsockopt(state->sockfd, IPPROTO_IPV6, IPV6_RECVTCLASS, &on, sizeof(on));
+        s1 = setsockopt(state->sockfd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on));
     }
 
-    if ( s != 0) {
+    if (s != 0 || s1 != 0) {
         return srs_error_new(ERROR_SOCKET_CREATE, "setsockopt udp socket error");
     }
 
-    if (ip != NULL) {
-        struct sockaddr_in local_addr = new_addr(ip, port);
+    if (isServer == true) {
         if (bind(state->sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
-            return srs_error_new(ERROR_SOCKET_BIND, "bind udp port error");
+            return srs_error_new(ERROR_SOCKET_BIND, "server bind udp port error");
         }
 
         if (!memcpy(local_sas, &local_addr, sizeof(struct sockaddr_storage))) {
             return srs_error_new(ERROR_SOCKET_CREATE, "memcpy local_sas error\n");
+        }
+    } else {
+        local_sas->ss_family = AF_INET; // TODO ipv6
+        if (bind(state->sockfd, (struct sockaddr *)local_sas, sizeof(*local_sas)) != 0) {
+            return srs_error_new(ERROR_SOCKET_BIND, "client bind udp port error");
         }
     }
 
@@ -450,7 +459,7 @@ srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, 
 
 sockaddr_in new_addr(const char *ip, unsigned int port) {
     struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
+    addr.sin_family = AF_INET; // TODO ipv6
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr(ip);
     return addr;

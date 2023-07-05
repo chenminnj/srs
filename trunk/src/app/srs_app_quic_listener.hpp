@@ -58,7 +58,7 @@ typedef struct SrsQuicState {
     struct lsquic_engine_settings engine_settings;
 
     // msg to send or read
-    char buf[4096];
+    char buf[1*1024*1024];
     size_t buf_used = 0;   /* 已消费过的buffer大小 */
     size_t buf_offset = 0; /* 已写入的buffer大小 */
 
@@ -71,7 +71,7 @@ typedef struct SrsQuicState {
 
 extern srs_error_t udp_read_net_data(SrsQuicState *state, srs_utime_t timeout, void *handle);
 extern int send_packets_out(void *ctx, const struct lsquic_out_spec *specs, unsigned n_specs);
-extern srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, struct sockaddr_storage *local_sas);
+extern srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, struct sockaddr_storage *local_sas, bool isServer);
 extern struct sockaddr_in new_addr(const char *ip, unsigned int port);
 extern void process_conns(SrsQuicState *state);
 extern void tut_proc_ancillary(struct msghdr *msg,

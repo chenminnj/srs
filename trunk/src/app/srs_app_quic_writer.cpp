@@ -21,7 +21,6 @@ srs_error_t SrsQuicResponseWriter::write(char *data, int size) {
     if (nwrite < 0) {
         return srs_error_new(ERROR_SOCKET_WRITE, "lsquic write");
     }
-
     lsquic_stream_flush(m_pStream);
 
     return err;

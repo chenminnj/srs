@@ -10,14 +10,14 @@ extern "C" {
 #include "srs_app_quic_listener.hpp"
 #include "srs_app_utility.hpp"
 #include "srs_core_autofree.hpp"
+#include "srs_kernel_balance.hpp"
 #include "srs_kernel_buffer.hpp"
 #include "srs_kernel_flv.hpp"
 #include "srs_kernel_log.hpp"
+#include "srs_kernel_utility.hpp"
 #include "srs_protocol_amf0.hpp"
 #include "srs_protocol_utility.hpp"
 #include "srs_rtmp_stack.hpp"
-#include "srs_kernel_utility.hpp"
-#include "srs_kernel_balance.hpp"
 
 SrsQuicEdgeIngester::SrsQuicEdgeIngester() {
 }
@@ -47,7 +47,7 @@ srs_error_t SrsQuicEdgeIngester::ingest(std::string &redirect) {
             upstream->kbps_sample(SRS_CONSTS_LOG_EDGE_PLAY, pprint->age());
         }
         SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = dynamic_cast<SrsEdgeQuicUpstream *>(upstream);
-        if ((err = udp_read_net_data(pSrsEdgeQuicUpstream->getSrsQuicState(), 500 * SRS_UTIME_MILLISECONDS, this)) != srs_success) {
+        if ((err = udp_read_net_data(pSrsEdgeQuicUpstream->getSrsQuicState(), 5000 * SRS_UTIME_MILLISECONDS, this)) != srs_success) {
             return srs_error_wrap(err, "udp read data err");
         }
     }
@@ -55,6 +55,8 @@ srs_error_t SrsQuicEdgeIngester::ingest(std::string &redirect) {
 }
 
 SrsEdgeQuicUpstream::SrsEdgeQuicUpstream(SrsEdgeIngester *pSrsEdgeIngester) {
+    m_hasReadFlvHeader = false;
+
     m_State = new SrsQuicState();
     m_State->ssl_ctx = NULL;
 
@@ -66,14 +68,6 @@ SrsEdgeQuicUpstream::SrsEdgeQuicUpstream(SrsEdgeIngester *pSrsEdgeIngester) {
 }
 
 SrsEdgeQuicUpstream::~SrsEdgeQuicUpstream() {
-    SSL_CTX_free(m_State->ssl_ctx);
-    m_State->ssl_ctx = NULL;
-
-    srs_close_stfd(m_State->srsNetfd);
-
-    srs_freep(m_State);
-    srs_freep(m_pTimer);
-    srs_freep(m_pDecoder);    
 }
 
 srs_error_t SrsEdgeQuicUpstream::connect(SrsRequest *r, SrsLbRoundRobin *lb) {
@@ -82,12 +76,12 @@ srs_error_t SrsEdgeQuicUpstream::connect(SrsRequest *r, SrsLbRoundRobin *lb) {
     m_pReq = r;
 
     if (true) {
-        SrsConfDirective* conf = _srs_config->get_vhost_edge_origin(m_pReq->vhost);
+        SrsConfDirective *conf = _srs_config->get_vhost_edge_origin(m_pReq->vhost);
 
         if (!conf) {
             return srs_error_new(ERROR_EDGE_VHOST_REMOVED, "vhost %s removed", m_pReq->vhost.c_str());
         }
-        
+
         // select the origin.
         std::string server = lb->select(conf->args);
         int port = SRS_CONSTS_RTMP_DEFAULT_PORT;
@@ -112,39 +106,73 @@ srs_error_t SrsEdgeQuicUpstream::recv_message(SrsCommonMessage **pmsg) {
 
 int SrsEdgeQuicUpstream::read_message(const int nr, SrsCommonMessage **pmsg) {
     srs_error_t err = srs_success;
+    size_t iTempUsed = 0;
+
+    int iHeaderSize = 9 + 4;
+    if (m_hasReadFlvHeader == false) {
+        if (nr >= 9) {
+            char flvHeader[9];
+            m_pDecoder->read_header(m_State->buf + m_State->buf_used, flvHeader);
+        } else {
+            return 0;
+        }
+        m_State->buf_used += 9;
+        iTempUsed += 9;
+
+        if (nr >= 9 + 4) {
+            char pts[4];
+            m_pDecoder->read_previous_tag_size(m_State->buf + m_State->buf_used, pts);
+        } else {
+            m_State->buf_used -= iTempUsed;
+            return 0;
+        }
+        m_State->buf_used += 4;
+        iTempUsed += 4;
+
+        m_hasReadFlvHeader = true;
+    } else {
+        iHeaderSize = 0;
+    }
 
     char type;
     int32_t size;
     uint32_t time;
-    if (nr >= 11) {
-        m_pDecoder->read_tag_header(m_State->buf + m_State->buf_offset + m_State->buf_used, &type, &size, &time);
-        m_State->buf_used += 11;
+    if (nr >= 11 + iHeaderSize) {
+        m_pDecoder->read_tag_header(m_State->buf + m_State->buf_used, &type, &size, &time);
     } else {
+        m_State->buf_used -= iTempUsed;
         return 0;
     }
+    m_State->buf_used += 11;
+    iTempUsed += 11;
+
+    srs_error("read_message_: tag size  %d", size);
 
     char *data = NULL;
-    if (nr >= 11 + size) {
+    if (nr >= 11 + size + iHeaderSize) {
         data = new char[size];
-        m_pDecoder->read_tag_data(m_State->buf + m_State->buf_offset + m_State->buf_used, data, size);
-        m_State->buf_used += size;
+        m_pDecoder->read_tag_data(m_State->buf + m_State->buf_used, data, size);
     } else {
+        m_State->buf_used -= iTempUsed;
         return 0;
     }
+    m_State->buf_used += size;
+    iTempUsed += size;
 
-    if (nr >= 11 + size + 4) {
+    if (nr >= 11 + size + 4 + iHeaderSize) {
         char pts[4];
-        m_pDecoder->read_previous_tag_size(m_State->buf + m_State->buf_offset + m_State->buf_used, pts);
-        m_State->buf_used += 4;
+        m_pDecoder->read_previous_tag_size(m_State->buf + m_State->buf_used, pts);
     } else {
+        m_State->buf_used -= iTempUsed;
         return 0;
     }
+    m_State->buf_used += 4;
 
     int stream_id = 1;
     SrsCommonMessage *msg = NULL;
     if ((err = srs_rtmp_create_msg(type, time, data, size, stream_id, &msg)) != srs_success) {
         srs_warn("create message %s", SrsCplxError::description(err).c_str());
-        return 1;
+        return 0;
     }
 
     *pmsg = msg;
@@ -186,6 +214,16 @@ srs_error_t SrsEdgeQuicUpstream::decode_message(SrsCommonMessage *msg, SrsPacket
 }
 
 void SrsEdgeQuicUpstream::close() {
+    m_hasReadFlvHeader = false;
+
+    SSL_CTX_free(m_State->ssl_ctx);
+    m_State->ssl_ctx = NULL;
+
+    srs_close_stfd(m_State->srsNetfd);
+    m_pTimer->stop();
+
+    srs_freep(m_State);
+    srs_freep(m_pTimer);
     srs_freep(m_pReq);
     srs_freep(m_pDecoder);
 }
@@ -195,7 +233,8 @@ srs_error_t SrsEdgeQuicUpstream::do_quic_connect() {
 
     m_State->m_pSrsQuicNetWorkBase = (void *)this;
 
-    if ((err = create_sock(m_State, NULL, 0, &m_State->local_sas)) != srs_success) {
+    // TODO
+    if ((err = create_sock(m_State, "127.0.0.1", 12345, &m_State->local_sas, false)) != srs_success) {
         return srs_error_wrap(err, "create udp sock error");
     }
 
@@ -339,28 +378,42 @@ void SrsEdgeQuicUpstream::client_on_stream_close_cb(lsquic_stream_t *stream, lsq
 void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
     SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = (SrsEdgeQuicUpstream *)h;
 
-    size_t offset = pSrsEdgeQuicUpstream->m_State->buf_offset;
-    size_t remainderSize = sizeof(pSrsEdgeQuicUpstream->m_State->buf) - offset;
-    ssize_t nr = lsquic_stream_read(stream, pSrsEdgeQuicUpstream->m_State->buf + offset, remainderSize);
+    char *pBuf = pSrsEdgeQuicUpstream->m_State->buf;
+    size_t *pOffset = &(pSrsEdgeQuicUpstream->m_State->buf_offset);
+    size_t *pBufUsed = &(pSrsEdgeQuicUpstream->m_State->buf_used);
+    size_t remainderSize = sizeof(pSrsEdgeQuicUpstream->m_State->buf) - *pOffset;
 
+    ssize_t nr = lsquic_stream_read(stream, pBuf + *pOffset, remainderSize);
+    srs_error("client_on_read_cb: offset %d, remainderSize %d, nr %d, used: %d ", *pOffset, remainderSize, nr, *pBufUsed);
     if (nr > 0) {
-        srs_info("Read { %d } frome server: { %s } ", nr, pSrsEdgeQuicUpstream->m_State->buf + offset);
+        srs_info("Read { %d } frome server: { %s } ", nr, pBuf + *pOffset);
 
-        pSrsEdgeQuicUpstream->m_State->buf_offset += nr;
-        srs_assert(pSrsEdgeQuicUpstream->m_State->buf_offset <= sizeof(pSrsEdgeQuicUpstream->m_State->buf));
+        *pOffset += nr;
+        srs_assert( (*pOffset) <= sizeof(pSrsEdgeQuicUpstream->m_State->buf));
 
         SrsCommonMessage *msg = NULL;
         SrsAutoFree(SrsCommonMessage, msg);
 
-        if (pSrsEdgeQuicUpstream->read_message(nr, &msg) == 1) {
-            string redirect = "";
-            if (msg != NULL) {
-                pSrsEdgeQuicUpstream->m_pSrsEdgeIngester->process_publish_message(msg, redirect);
+        ssize_t leftBytes = *pOffset - *pBufUsed;
+        while (leftBytes > 0) {
+            if (pSrsEdgeQuicUpstream->read_message(leftBytes, &msg) == 1) {
+                string redirect = "";
+                if (msg != NULL) {
+                    pSrsEdgeQuicUpstream->m_pSrsEdgeIngester->process_publish_message(msg, redirect);
+                    srs_error("client_on_read_cb: right right right right ,---------------- leftBytes %d", leftBytes);
+                }
+                leftBytes = *pOffset - *pBufUsed;
+            } else {
+                break;
             }
         }
+
         // TODO 如果buf结尾，并不是一个完整的tag，需要把buf realloc 下,否则就读不到新数据包了
-        if (pSrsEdgeQuicUpstream->m_State->buf_offset == pSrsEdgeQuicUpstream->m_State->buf_used) {
-            pSrsEdgeQuicUpstream->m_State->buf_offset = pSrsEdgeQuicUpstream->m_State->buf_used = 0;
+        if (leftBytes > 0) {
+            memcpy(pBuf, pBuf + *pBufUsed, leftBytes);
+            *pOffset = leftBytes;
+            *pBufUsed = 0;
+            srs_error("client_on_read_cb: buffer reset");
         }
 
         lsquic_stream_wantread(stream, 1);
@@ -405,15 +458,13 @@ srs_error_t SrsQuicFlvDecoder::initialize(ISrsReader *fr) {
     return srs_success;
 }
 
-srs_error_t SrsQuicFlvDecoder::read_header(char header[9]) {
+srs_error_t SrsQuicFlvDecoder::read_header(const char *th, char header[9]) {
     srs_error_t err = srs_success;
 
     srs_assert(header);
 
     // TODO: FIXME: Should use readfully.
-    if ((err = reader->read(header, 9, NULL)) != srs_success) {
-        return srs_error_wrap(err, "read header");
-    }
+    memcpy(header, th, 9);
 
     char *h = header;
     if (h[0] != 'F' || h[1] != 'L' || h[2] != 'V') {

@@ -37,7 +37,7 @@ class SrsQuicFlvDecoder {
   public:
     // Read the flv header, donot including the 4bytes previous tag size.
     // @remark assert header not NULL.
-    virtual srs_error_t read_header(char header[9]);
+    virtual srs_error_t read_header(const char *th, char header[9]);
     // Read the tag header infos.
     // @remark assert ptype/pdata_size/ptime not NULL.
     virtual void read_tag_header(const char *th, char *ptype, int32_t *pdata_size, uint32_t *ptime);
@@ -56,6 +56,8 @@ class SrsEdgeQuicUpstream : public ISrsHourGlass, public SrsEdgeUpstream {
 
     struct lsquic_engine_api m_engine_api;
     struct lsquic_stream_if m_stream_if;
+
+    bool m_hasReadFlvHeader;
 
   private:
     SrsEdgeIngester *m_pSrsEdgeIngester;
