@@ -420,7 +420,7 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
     } else {
         /* EOF */
         srs_info(" read to end-of-stream: close and read from remote server again ");
-        lsquic_stream_shutdown(stream, 0);
+        lsquic_stream_close(stream);
 
         /* 重新开始一个stream */
         lsquic_conn_make_stream(pSrsEdgeQuicUpstream->m_State->m_quicConn);

@@ -82,7 +82,7 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
 
     if (srs_get_log_level(_srs_config->get_log_level()) > SrsLogLevelWarn) {
         lsquic_log_to_fstream(stderr, LLTS_HHMMSSUS);
-        lsquic_set_log_level("info");
+        lsquic_set_log_level("debug");
     }
 
     if (0 != lsquic_global_init(LSQUIC_GLOBAL_SERVER)) {
@@ -357,7 +357,7 @@ void SrsQuicListener::server_on_read_cb(lsquic_stream_t *stream, lsquic_stream_c
     } else if (nr == 0) {
         /* EOF */
         srs_trace(" read to end-of-stream: close it ");
-        lsquic_stream_shutdown(stream, 0);
+        lsquic_stream_close(stream);
     } else {
         srs_error(" read to end-of-stream: close and read from stdin again ");
         lsquic_conn_abort(lsquic_stream_conn(stream));

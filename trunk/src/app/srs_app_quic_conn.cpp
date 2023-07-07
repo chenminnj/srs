@@ -19,6 +19,7 @@ SrsQuicConn::SrsQuicConn(lsquic_stream_t *pStream) {
     m_pReq = NULL;
     m_pStream = pStream;
     m_trd = new SrsSTCoroutine("quic server", this, _srs_context->get_id());
+    ((SrsSTCoroutine*)m_trd)->set_stack_size(1 << 18);
 }
 
 SrsQuicConn::~SrsQuicConn() {
@@ -158,6 +159,7 @@ srs_error_t SrsQuicConn::do_cycle() {
 
         // sendout all messages.
         SrsFlvStreamEncoder *ffe = dynamic_cast<SrsFlvStreamEncoder *>(pEnc);
+srs_error("SrsQuicResponseWriter::writev ,================ count %d", count);
         err = ffe->write_tags(msgs.msgs, count);
 
         // free the messages.
