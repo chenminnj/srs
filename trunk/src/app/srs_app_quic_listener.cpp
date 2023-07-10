@@ -310,7 +310,8 @@ lsquic_stream_ctx_t *SrsQuicListener::server_on_new_stream_cb(void *ea_stream_if
     streamCtx->m_pSrsQuicNetWorkBase = ea_stream_if_ctx; // 目前没用处
     streamCtx->m_pQuicStream = stream;
 
-    streamCtx->m_pSrsQuicConn = new SrsQuicConn(stream);
+    SrsQuicListener *p = (SrsQuicListener *)ea_stream_if_ctx;
+    streamCtx->m_pSrsQuicConn = new SrsQuicConn(stream, p->m_State);
 
     // want to read request : host | app_name | stream_name
     lsquic_stream_wantread(stream, 1);
@@ -392,7 +393,7 @@ int send_packets_out(void *ctx, const lsquic_out_spec *specs, unsigned n_specs) 
             break;
         }
     }
-
+ srs_error("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ send_packets_out: n_specs: %d, n: %d", n_specs, n);
     return (int)n;
 }
 

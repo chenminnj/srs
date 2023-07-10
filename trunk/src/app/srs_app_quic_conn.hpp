@@ -10,6 +10,7 @@ extern "C"
 #include "srs_app_server.hpp"
 
 class SrsRequest;
+struct SrsQuicState;
 
 class SrsQuicConn : public ISrsCoroutineHandler
 {
@@ -17,9 +18,10 @@ private:
     lsquic_stream_t *m_pStream;
     SrsCoroutine *m_trd;
     SrsRequest *m_pReq;
+    SrsQuicState *m_pSrsQuicState;
 
 public:
-    SrsQuicConn(lsquic_stream_t *pStream);
+    SrsQuicConn(lsquic_stream_t *pStream, SrsQuicState *state);
     virtual ~SrsQuicConn();
 
 public:

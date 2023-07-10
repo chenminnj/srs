@@ -513,7 +513,7 @@ srs_error_t SrsFlvTransmuxer::write_tags(SrsSharedPtrMessage** msgs, int count)
     iovec* iovs = iovss;
     for (int i = 0; i < count; i++) {
         SrsSharedPtrMessage* msg = msgs[i];
-        
+srs_error("SrsFlvTransmuxer::write_tags: msg->size %d", msg->size);        
         // cache all flv header.
         if (msg->is_audio()) {
             cache_audio(msg->timestamp, msg->payload, msg->size, cache);

@@ -129,7 +129,6 @@ int SrsEdgeQuicUpstream::read_message(const int nr, SrsCommonMessage **pmsg) {
         m_State->buf_used += 4;
         iTempUsed += 4;
 
-        m_hasReadFlvHeader = true;
     } else {
         iHeaderSize = 0;
     }
@@ -167,6 +166,10 @@ int SrsEdgeQuicUpstream::read_message(const int nr, SrsCommonMessage **pmsg) {
         return 0;
     }
     m_State->buf_used += 4;
+
+    if (m_hasReadFlvHeader == false) {
+        m_hasReadFlvHeader = true;
+    }
 
     int stream_id = 1;
     SrsCommonMessage *msg = NULL;
@@ -384,17 +387,16 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
     size_t remainderSize = sizeof(pSrsEdgeQuicUpstream->m_State->buf) - *pOffset;
 
     ssize_t nr = lsquic_stream_read(stream, pBuf + *pOffset, remainderSize);
-    srs_error("client_on_read_cb: offset %d, remainderSize %d, nr %d, used: %d ", *pOffset, remainderSize, nr, *pBufUsed);
     if (nr > 0) {
         srs_info("Read { %d } frome server: { %s } ", nr, pBuf + *pOffset);
 
         *pOffset += nr;
-        srs_assert( (*pOffset) <= sizeof(pSrsEdgeQuicUpstream->m_State->buf));
+        srs_assert((*pOffset) <= sizeof(pSrsEdgeQuicUpstream->m_State->buf));
 
         SrsCommonMessage *msg = NULL;
         SrsAutoFree(SrsCommonMessage, msg);
 
-        ssize_t leftBytes = *pOffset - *pBufUsed;
+        size_t leftBytes = *pOffset - *pBufUsed;
         while (leftBytes > 0) {
             if (pSrsEdgeQuicUpstream->read_message(leftBytes, &msg) == 1) {
                 string redirect = "";
@@ -408,11 +410,15 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
             }
         }
 
+        srs_error("client_on_read_cb: offset %d, remainderSize %d, nr %d, used: %d ", *pOffset, remainderSize, nr, *pBufUsed);
         // TODO 如果buf结尾，并不是一个完整的tag，需要把buf realloc 下,否则就读不到新数据包了
-        if (leftBytes > 0) {
+        if (leftBytes > 0 && *pBufUsed > leftBytes) {
             memcpy(pBuf, pBuf + *pBufUsed, leftBytes);
             *pOffset = leftBytes;
             *pBufUsed = 0;
+            srs_error("client_on_read_cb: buffer reassign");
+        } else if (leftBytes == 0) {
+            *pOffset = *pBufUsed = 0;
             srs_error("client_on_read_cb: buffer reset");
         }
 

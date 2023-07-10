@@ -14,10 +14,12 @@ extern "C" {
 #include "srs_rtmp_msg_array.hpp"
 #include "srs_rtmp_stack.hpp"
 #include "srs_app_config.hpp"
+#include "srs_app_quic_listener.hpp"
 
-SrsQuicConn::SrsQuicConn(lsquic_stream_t *pStream) {
+SrsQuicConn::SrsQuicConn(lsquic_stream_t *pStream, SrsQuicState *state) {
     m_pReq = NULL;
     m_pStream = pStream;
+    m_pSrsQuicState = state;
     m_trd = new SrsSTCoroutine("quic server", this, _srs_context->get_id());
     ((SrsSTCoroutine*)m_trd)->set_stack_size(1 << 18);
 }
@@ -83,7 +85,7 @@ srs_error_t SrsQuicConn::do_cycle() {
     srs_error_t err = srs_success;
 
     // create quic writer with lsquic stream
-    ISrsHttpResponseWriter *pResponseWriter = new SrsQuicResponseWriter(m_pStream);
+    ISrsHttpResponseWriter *pResponseWriter = new SrsQuicResponseWriter(m_pStream, m_pSrsQuicState);
     SrsAutoFree(ISrsHttpResponseWriter, pResponseWriter);
 
     // create flv encoder
@@ -159,7 +161,7 @@ srs_error_t SrsQuicConn::do_cycle() {
 
         // sendout all messages.
         SrsFlvStreamEncoder *ffe = dynamic_cast<SrsFlvStreamEncoder *>(pEnc);
-srs_error("SrsQuicResponseWriter::writev ,================ count %d", count);
+srs_error("SrsQuicConn::do_cycle ,================ count %d", count);
         err = ffe->write_tags(msgs.msgs, count);
 
         // free the messages.

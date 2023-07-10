@@ -16,12 +16,14 @@ extern "C" {
 #include "srs_http_stack.hpp"
 
 class SrsHttpHeader;
+struct SrsQuicState;
 class SrsQuicResponseWriter : public ISrsHttpResponseWriter {
   private:
     lsquic_stream_t *m_pStream;
+    SrsQuicState *m_pSrsQuicState;
 
   public:
-    SrsQuicResponseWriter(lsquic_stream_t *pStream);
+    SrsQuicResponseWriter(lsquic_stream_t *pStream, SrsQuicState *state);
     virtual ~SrsQuicResponseWriter();
 
   public:
