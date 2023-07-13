@@ -19,6 +19,7 @@ private:
     SrsCoroutine *m_trd;
     SrsRequest *m_pReq;
     SrsQuicState *m_pSrsQuicState;
+    volatile bool m_running;
 
 public:
     SrsQuicConn(lsquic_stream_t *pStream, SrsQuicState *state);
@@ -27,6 +28,7 @@ public:
 public:
     virtual srs_error_t start(SrsRequest *r);
     virtual srs_error_t cycle();
+    virtual void interrupt();
 
 private:
     virtual srs_error_t do_cycle();

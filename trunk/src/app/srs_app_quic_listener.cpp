@@ -34,6 +34,8 @@ SrsQuicListener::SrsQuicListener(SrsServer *svr, SrsListenerType t) : SrsListene
     // TODO
     m_cert_file = "/home/chenmin/ssl/dtls.pem";
     m_key_file = "/home/chenmin/ssl/privatekey.pem";
+
+    m_pSrsQuicConn = NULL;
 }
 
 SrsQuicListener::~SrsQuicListener() {
@@ -42,6 +44,10 @@ SrsQuicListener::~SrsQuicListener() {
 
     SSL_CTX_free(m_State->ssl_ctx);
     m_State->ssl_ctx = NULL;
+
+    if (m_State->engine) {
+        lsquic_engine_destroy(m_State->engine);
+    }
 
     srs_close_stfd(m_State->srsNetfd);
 
@@ -93,10 +99,13 @@ srs_error_t SrsQuicListener::listen(std::string ip, int port) {
      * decryption failures in Wireshark.  For the purposes of the demo, we
      * override the default.
      */
-    m_State->engine_settings.es_ql_bits = 0;
+    // m_State->engine_settings.es_ql_bits = 0;
 
     lsquic_engine_init_settings(&m_State->engine_settings, LSENG_SERVER);
     m_State->engine_settings.es_ecn = LSQUIC_DF_ECN;
+    m_State->engine_settings.es_cfcw = 1 * 1024 * 1024;
+    m_State->engine_settings.es_sfcw = 1 * 1024 * 1024;
+    m_State->engine_settings.es_init_max_stream_data_uni = 1 * 1024 * 1024;
 
     char err_buf[100] = {0};
     if (0 != lsquic_engine_check_settings(&m_State->engine_settings, LSENG_SERVER, err_buf, sizeof(err_buf))) {
@@ -290,6 +299,7 @@ void SrsQuicListener::server_on_conn_closed_cb(lsquic_conn_t *conn) {
     lsquic_conn_status(conn, errbuf, 2048);
     srs_trace("udp server_on_conn_closed_cb,errbuf { %s }", errbuf);
 
+    lsquic_conn_set_ctx(conn, NULL);
     if (connCtx) {
         SrsQuicListener *handle = (SrsQuicListener *)connCtx->m_pSrsQuicNetWorkBase;
         vector<lsquic_conn_ctx_t *>::iterator iter = find(handle->m_quicConns.begin(), handle->m_quicConns.end(), connCtx);
@@ -311,7 +321,10 @@ lsquic_stream_ctx_t *SrsQuicListener::server_on_new_stream_cb(void *ea_stream_if
     streamCtx->m_pQuicStream = stream;
 
     SrsQuicListener *p = (SrsQuicListener *)ea_stream_if_ctx;
-    streamCtx->m_pSrsQuicConn = new SrsQuicConn(stream, p->m_State);
+    if (p->m_pSrsQuicConn) {
+        delete p->m_pSrsQuicConn;
+    }
+    p->m_pSrsQuicConn = streamCtx->m_pSrsQuicConn = new SrsQuicConn(stream, p->m_State);
 
     // want to read request : host | app_name | stream_name
     lsquic_stream_wantread(stream, 1);
@@ -321,7 +334,8 @@ lsquic_stream_ctx_t *SrsQuicListener::server_on_new_stream_cb(void *ea_stream_if
 void SrsQuicListener::server_on_stream_close_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *streamCtx) {
     srs_trace("On close stream");
     if (streamCtx->m_pSrsQuicConn) {
-        delete streamCtx->m_pSrsQuicConn;
+        streamCtx->m_pSrsQuicConn->interrupt();
+        // delete streamCtx->m_pSrsQuicConn; 同一个协程 stop 自己, 会导致 st thread assert 异常,改成在 server_on_new_stream_cb 里释放
     }
     delete streamCtx;
 }
@@ -332,7 +346,7 @@ void SrsQuicListener::server_on_read_cb(lsquic_stream_t *stream, lsquic_stream_c
     ssize_t nr = lsquic_stream_read(stream, buf, sizeof(buf));
     if (nr > 0) {
         // fwrite(buf, 1, nread, stdout);
-        srs_trace("Read { %d } from remote: { %s } ", nr, buf);
+        srs_error("Read { %d } from remote: { %s } ", nr, buf);
 
         if (buf[0] == '1') {
             // read quic client req: 1|host|live|livestream
@@ -352,28 +366,30 @@ void SrsQuicListener::server_on_read_cb(lsquic_stream_t *stream, lsquic_stream_c
                 srs_error("lsquic : read client request error,want host|live|livestream,but got %s", buf);
                 lsquic_conn_abort(lsquic_stream_conn(stream));
             }
+        }else if(buf[0] == '2'){
+            srs_error("-------------server_on_read_cb %s,%d",buf,nr);
+            if( nr == strlen("2|you need to close this stream") ){
+                srs_trace(" client want to close the stream: close it ");
+                lsquic_stream_close(stream);
+            }
         }
-
         // fflush(stdout);
     } else if (nr == 0) {
         /* EOF */
         srs_trace(" read to end-of-stream: close it ");
         lsquic_stream_close(stream);
     } else {
-        srs_error(" read to end-of-stream: close and read from stdin again ");
-        lsquic_conn_abort(lsquic_stream_conn(stream));
+        srs_error(" read to end-of-stream: close it ");
+        lsquic_stream_close(stream);
+        // lsquic_conn_abort(lsquic_stream_conn(stream));
     }
     // TODO receive all messages from client, then drop them
-    // lsquic_stream_wantread(stream, 0);
+    lsquic_stream_wantread(stream, 1);
 }
 
 void SrsQuicListener::server_on_write_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *streamCtx) {
+    // useless
     lsquic_stream_wantwrite(stream, 0);
-    // lsquic_stream_write(stream, streamCtx->buf, streamCtx->buf_off);
-    // streamCtx->buf_off = 0;
-    // lsquic_stream_flush(stream);
-    // lsquic_stream_wantwrite(stream, 0);
-    // lsquic_stream_wantread(stream, 1);
 }
 
 int send_packets_out(void *ctx, const lsquic_out_spec *specs, unsigned n_specs) {
@@ -393,7 +409,6 @@ int send_packets_out(void *ctx, const lsquic_out_spec *specs, unsigned n_specs) 
             break;
         }
     }
- srs_error("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ send_packets_out: n_specs: %d, n: %d", n_specs, n);
     return (int)n;
 }
 
@@ -451,6 +466,43 @@ srs_error_t create_sock(SrsQuicState *state, const char *ip, unsigned int port, 
         }
     }
 
+    // set send buffer
+    int default_sndbuf = 0;
+    int expect_sndbuf = 1024 * 1024 * 10; // 10M
+    int actual_sndbuf = expect_sndbuf;
+    int r0_sndbuf = 0;
+    if (true) {
+        socklen_t opt_len = sizeof(default_sndbuf);
+        // TODO: FIXME: check err
+        getsockopt(state->sockfd, SOL_SOCKET, SO_SNDBUF, (void *)&default_sndbuf, &opt_len);
+
+        if ((r0_sndbuf = setsockopt(state->sockfd, SOL_SOCKET, SO_SNDBUF, (void *)&actual_sndbuf, sizeof(actual_sndbuf))) < 0) {
+            srs_warn("set SO_SNDBUF failed, expect=%d, r0=%d", expect_sndbuf, r0_sndbuf);
+        }
+
+        opt_len = sizeof(actual_sndbuf);
+        getsockopt(state->sockfd, SOL_SOCKET, SO_SNDBUF, (void *)&actual_sndbuf, &opt_len);
+    }
+
+    int default_rcvbuf = 0;
+    int expect_rcvbuf = 1024 * 1024 * 10; // 10M
+    int actual_rcvbuf = expect_rcvbuf;
+    int r0_rcvbuf = 0;
+    if (true) {
+        socklen_t opt_len = sizeof(default_rcvbuf);
+        getsockopt(state->sockfd, SOL_SOCKET, SO_RCVBUF, (void *)&default_rcvbuf, &opt_len);
+
+        if ((r0_rcvbuf = setsockopt(state->sockfd, SOL_SOCKET, SO_RCVBUF, (void *)&actual_rcvbuf, sizeof(actual_rcvbuf))) < 0) {
+            srs_warn("set SO_RCVBUF failed, expect=%d, r0=%d", expect_rcvbuf, r0_rcvbuf);
+        }
+
+        opt_len = sizeof(actual_rcvbuf);
+        getsockopt(state->sockfd, SOL_SOCKET, SO_RCVBUF, (void *)&actual_rcvbuf, &opt_len);
+    }
+
+    srs_trace("UDP #%d LISTEN at %s:%d, SO_SNDBUF(default=%d, expect=%d, actual=%d, r0=%d), SO_RCVBUF(default=%d, expect=%d, actual=%d, r0=%d)",
+              state->sockfd, ip, port, default_sndbuf, expect_sndbuf, actual_sndbuf, r0_sndbuf, default_rcvbuf, expect_rcvbuf, actual_rcvbuf, r0_rcvbuf);
+
     if ((state->srsNetfd = srs_netfd_open_socket(state->sockfd)) == NULL) {
         return srs_error_new(ERROR_ST_OPEN_SOCKET, "st open");
     }
@@ -469,7 +521,7 @@ sockaddr_in new_addr(const char *ip, unsigned int port) {
 srs_error_t udp_read_net_data(SrsQuicState *state, srs_utime_t timeout, void *handle) {
     ssize_t nread;
     struct sockaddr_storage peer_sas, local_sas;
-    unsigned char buf[4096];
+    unsigned char buf[8192];
     unsigned char ctl_buf[CTL_SZ];
     struct iovec vec[1] = {{buf, sizeof(buf)}};
 
@@ -490,8 +542,6 @@ srs_error_t udp_read_net_data(SrsQuicState *state, srs_utime_t timeout, void *ha
         srs_trace("read nothing......");
         return srs_success;
     }
-
-    srs_trace("socket receive_size { %d }", nread);
 
     local_sas = state->local_sas;
     // TODO handle ECN properly

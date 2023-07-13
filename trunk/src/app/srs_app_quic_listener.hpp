@@ -55,6 +55,7 @@ typedef struct SrsQuicState {
     srs_netfd_t srsNetfd;
     struct sockaddr_storage local_sas;
     lsquic_engine_t *engine = NULL;
+    lsquic_stream_t *stream = NULL;
     struct lsquic_engine_settings engine_settings;
 
     // msg to send or read
@@ -81,6 +82,7 @@ class SrsQuicListener : public SrsListener, public ISrsCoroutineHandler, public 
   private:
     SrsHourGlass *m_pTimer;
     SrsQuicState *m_State;
+    SrsQuicConn *m_pSrsQuicConn;    
 
     struct lsquic_engine_api m_engine_api;
     struct lsquic_stream_if m_stream_if;

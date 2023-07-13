@@ -47,7 +47,7 @@ srs_error_t SrsQuicEdgeIngester::ingest(std::string &redirect) {
             upstream->kbps_sample(SRS_CONSTS_LOG_EDGE_PLAY, pprint->age());
         }
         SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = dynamic_cast<SrsEdgeQuicUpstream *>(upstream);
-        if ((err = udp_read_net_data(pSrsEdgeQuicUpstream->getSrsQuicState(), 5000 * SRS_UTIME_MILLISECONDS, this)) != srs_success) {
+        if ((err = udp_read_net_data(pSrsEdgeQuicUpstream->getSrsQuicState(), 20000 * SRS_UTIME_MILLISECONDS, this)) != srs_success) {
             return srs_error_wrap(err, "udp read data err");
         }
     }
@@ -145,8 +145,6 @@ int SrsEdgeQuicUpstream::read_message(const int nr, SrsCommonMessage **pmsg) {
     m_State->buf_used += 11;
     iTempUsed += 11;
 
-    srs_error("read_message_: tag size  %d", size);
-
     char *data = NULL;
     if (nr >= 11 + size + iHeaderSize) {
         data = new char[size];
@@ -219,15 +217,29 @@ srs_error_t SrsEdgeQuicUpstream::decode_message(SrsCommonMessage *msg, SrsPacket
 void SrsEdgeQuicUpstream::close() {
     m_hasReadFlvHeader = false;
 
+    if (m_State->stream) {
+        // TODO sendStr need to be a const value
+        string sendStr = "2|you need to close this stream";
+        int n = lsquic_stream_write(m_State->stream, sendStr.c_str(), sendStr.length());
+        srs_error("close write %d bytes",n);
+        lsquic_stream_flush(m_State->stream);
+        process_conns(m_State);
+
+        lsquic_stream_close(m_State->stream);
+    }
+
     SSL_CTX_free(m_State->ssl_ctx);
     m_State->ssl_ctx = NULL;
+
+    if (m_State->engine) {
+        lsquic_engine_destroy(m_State->engine);
+    }
 
     srs_close_stfd(m_State->srsNetfd);
     m_pTimer->stop();
 
     srs_freep(m_State);
     srs_freep(m_pTimer);
-    srs_freep(m_pReq);
     srs_freep(m_pDecoder);
 }
 
@@ -248,6 +260,9 @@ srs_error_t SrsEdgeQuicUpstream::do_quic_connect() {
 
     lsquic_engine_init_settings(&m_State->engine_settings, 0);
     m_State->engine_settings.es_ecn = LSQUIC_DF_ECN;
+    m_State->engine_settings.es_cfcw = 1 * 1024 * 1024;
+    m_State->engine_settings.es_sfcw = 1 * 1024 * 1024;
+    m_State->engine_settings.es_init_max_stream_data_uni = 1 * 1024 * 1024;
 
     init_ssl_ctx();
 
@@ -354,13 +369,15 @@ void SrsEdgeQuicUpstream::client_on_conn_closed_cb(lsquic_conn_t *conn) {
     lsquic_conn_status(conn, errbuf, 2048);
     srs_info("client connection closed : errbuf { %s } , -- stop reading from socket", errbuf);
 
+    lsquic_conn_set_ctx(conn, NULL);
+
     return;
 }
 
 lsquic_stream_ctx_t *SrsEdgeQuicUpstream::client_on_new_stream_cb(void *ea_stream_if_ctx, lsquic_stream_t *stream) {
     srs_error("On new stream");
     SrsEdgeQuicUpstream *pSrsEdgeQuicUpstream = (SrsEdgeQuicUpstream *)ea_stream_if_ctx;
-    // pSrsEdgeQuicUpstream->m_State->stream = stream;
+    pSrsEdgeQuicUpstream->m_State->stream = stream;
 
     // write req to remote srs origin
     string sendStr = "1|";
@@ -375,7 +392,7 @@ lsquic_stream_ctx_t *SrsEdgeQuicUpstream::client_on_new_stream_cb(void *ea_strea
 }
 
 void SrsEdgeQuicUpstream::client_on_stream_close_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *st_h) {
-    srs_info("on client_on_stream_close_cb");
+    srs_error("on client_on_stream_close_cb");
 }
 
 void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
@@ -402,7 +419,6 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
                 string redirect = "";
                 if (msg != NULL) {
                     pSrsEdgeQuicUpstream->m_pSrsEdgeIngester->process_publish_message(msg, redirect);
-                    srs_error("client_on_read_cb: right right right right ,---------------- leftBytes %d", leftBytes);
                 }
                 leftBytes = *pOffset - *pBufUsed;
             } else {
@@ -410,7 +426,6 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
             }
         }
 
-        srs_error("client_on_read_cb: offset %d, remainderSize %d, nr %d, used: %d ", *pOffset, remainderSize, nr, *pBufUsed);
         // TODO 如果buf结尾，并不是一个完整的tag，需要把buf realloc 下,否则就读不到新数据包了
         if (leftBytes > 0 && *pBufUsed > leftBytes) {
             memcpy(pBuf, pBuf + *pBufUsed, leftBytes);
@@ -419,7 +434,6 @@ void SrsEdgeQuicUpstream::client_on_read_cb(lsquic_stream_t *stream, lsquic_stre
             srs_error("client_on_read_cb: buffer reassign");
         } else if (leftBytes == 0) {
             *pOffset = *pBufUsed = 0;
-            srs_error("client_on_read_cb: buffer reset");
         }
 
         lsquic_stream_wantread(stream, 1);

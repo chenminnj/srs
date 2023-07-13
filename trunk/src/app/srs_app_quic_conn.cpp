@@ -3,9 +3,11 @@
 extern "C" {
 #include "lsquic.h"
 }
+#include "srs_app_config.hpp"
 #include "srs_app_http_stream.hpp"
 #include "srs_app_pithy_print.hpp"
 #include "srs_app_quic_conn.hpp"
+#include "srs_app_quic_listener.hpp"
 #include "srs_app_quic_writer.hpp"
 #include "srs_core_autofree.hpp"
 #include "srs_core_performance.hpp"
@@ -13,19 +15,17 @@ extern "C" {
 #include "srs_kernel_log.hpp"
 #include "srs_rtmp_msg_array.hpp"
 #include "srs_rtmp_stack.hpp"
-#include "srs_app_config.hpp"
-#include "srs_app_quic_listener.hpp"
 
 SrsQuicConn::SrsQuicConn(lsquic_stream_t *pStream, SrsQuicState *state) {
+    m_running = false;
     m_pReq = NULL;
     m_pStream = pStream;
     m_pSrsQuicState = state;
     m_trd = new SrsSTCoroutine("quic server", this, _srs_context->get_id());
-    ((SrsSTCoroutine*)m_trd)->set_stack_size(1 << 18);
+    ((SrsSTCoroutine *)m_trd)->set_stack_size(1 << 18);
 }
 
 SrsQuicConn::~SrsQuicConn() {
-    m_trd->interrupt();
     srs_freep(m_trd);
     srs_freep(m_pReq);
 }
@@ -44,6 +44,7 @@ srs_error_t SrsQuicConn::start(SrsRequest *r) {
 
 srs_error_t SrsQuicConn::cycle() {
     srs_error_t err = srs_success;
+    m_running = true;
     if ((err = do_cycle()) != srs_success) {
         err = srs_error_wrap(err, "SrsQuicConn cycle");
     }
@@ -79,6 +80,11 @@ srs_error_t SrsQuicConn::cycle() {
     // srs_freep(err);
 
     return err;
+}
+
+void SrsQuicConn::interrupt() {
+    // m_trd->interrupt();
+    m_running = false;
 }
 
 srs_error_t SrsQuicConn::do_cycle() {
@@ -128,7 +134,7 @@ srs_error_t SrsQuicConn::do_cycle() {
     }
 
     SrsMessageArray msgs(SRS_PERF_MW_MSGS);
-    while (true) {
+    while (m_running == true) {
         if ((err = m_trd->pull()) != srs_success) {
             return srs_error_wrap(err, "quic server thread");
         }
@@ -161,7 +167,6 @@ srs_error_t SrsQuicConn::do_cycle() {
 
         // sendout all messages.
         SrsFlvStreamEncoder *ffe = dynamic_cast<SrsFlvStreamEncoder *>(pEnc);
-srs_error("SrsQuicConn::do_cycle ,================ count %d", count);
         err = ffe->write_tags(msgs.msgs, count);
 
         // free the messages.
